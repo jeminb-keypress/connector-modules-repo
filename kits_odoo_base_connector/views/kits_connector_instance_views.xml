@@ -1,0 +1,124 @@
+<?xml version="1.0" encoding="utf-8"?>
+<odoo>
+    <record id="kits_connector_instance_view_list" model="ir.ui.view">
+        <field name="name">kits.connector.instance.list</field>
+        <field name="model">kits.connector.instance</field>
+        <field name="arch" type="xml">
+            <list string="Connector Instances">
+                <field name="name"/>
+                <field name="platform_type"/>
+                <field name="company_id" groups="base.group_multi_company"/>
+                <field name="state" widget="badge"
+                         decoration-success="state == 'connected'"
+                         decoration-danger="state == 'error'"
+                         decoration-muted="state in ('draft', 'disconnected')"/>
+                <field name="base_url" optional="show"/>
+                <field name="last_connection_test" optional="hide"/>
+                <field name="active" column_invisible="True"/>
+            </list>
+        </field>
+    </record>
+
+    <record id="kits_connector_instance_view_form" model="ir.ui.view">
+        <field name="name">kits.connector.instance.form</field>
+        <field name="model">kits.connector.instance</field>
+        <field name="arch" type="xml">
+            <form string="Connector Instance">
+                <header>
+                    <button name="action_test_connection"
+                            type="object"
+                            string="Test Connection"
+                            class="btn-primary"
+                            groups="kits_odoo_base_connector.group_kits_connector_manager"/>
+                    <button name="action_set_disconnected"
+                            type="object"
+                            string="Mark Disconnected"
+                            invisible="state == 'disconnected'"
+                            groups="kits_odoo_base_connector.group_kits_connector_manager"/>
+                    <field name="state" widget="statusbar"
+                             statusbar_visible="draft,connected,error,disconnected"/>
+                </header>
+                <sheet>
+                    <div class="oe_button_box" name="button_box">
+                        <button name="action_view_sync_jobs" type="object" class="oe_stat_button" icon="fa-tasks">
+                            <field name="sync_job_count" widget="statinfo" string="Sync Jobs"/>
+                        </button>
+                        <button name="action_view_logs" type="object" class="oe_stat_button" icon="fa-list-alt">
+                            <field name="log_count" widget="statinfo" string="Logs"/>
+                        </button>
+                        <button name="action_view_bindings" type="object" class="oe_stat_button" icon="fa-link">
+                            <field name="binding_count" widget="statinfo" string="Bindings"/>
+                        </button>
+                    </div>
+                    <widget name="web_ribbon" title="Archived" bg_color="text-bg-danger" invisible="active"/>
+                    <div class="oe_title">
+                        <label for="name"/>
+                        <h1>
+                            <field name="name" placeholder="e.g. Main Store"/>
+                        </h1>
+                    </div>
+                    <group>
+                        <group name="group_connection" string="Connection">
+                            <field name="platform_type"/>
+                            <field name="company_id" groups="base.group_multi_company"/>
+                            <field name="base_url" placeholder="https://api.example.com"/>
+                            <field name="timeout"/>
+                            <field name="active"/>
+                        </group>
+                        <group name="group_credentials"
+                               string="Credentials"
+                               groups="kits_odoo_base_connector.group_kits_connector_manager">
+                            <field name="api_key" widget="password"/>
+                            <field name="api_secret" widget="password"/>
+                            <field name="last_connection_test"/>
+                            <field name="last_error"/>
+                        </group>
+                    </group>
+                    <notebook>
+                        <page string="Extra Configuration" name="config">
+                            <field name="config_json"/>
+                            <field name="notes" placeholder="Internal notes"/>
+                        </page>
+                    </notebook>
+                </sheet>
+                <chatter/>
+            </form>
+        </field>
+    </record>
+
+    <record id="kits_connector_instance_view_search" model="ir.ui.view">
+        <field name="name">kits.connector.instance.search</field>
+        <field name="model">kits.connector.instance</field>
+        <field name="arch" type="xml">
+            <search string="Search Connector Instances">
+                <field name="name"/>
+                <field name="platform_type"/>
+                <field name="base_url"/>
+                <field name="company_id"/>
+                <filter string="Connected" name="filter_connected" domain="[('state', '=', 'connected')]"/>
+                <filter string="Error" name="filter_error" domain="[('state', '=', 'error')]"/>
+                <filter string="Archived" name="filter_inactive" domain="[('active', '=', False)]"/>
+                <separator/>
+                <filter string="Company" name="group_company" context="{'group_by': 'company_id'}"/>
+                <filter string="Platform" name="group_platform" context="{'group_by': 'platform_type'}"/>
+                <filter string="Status" name="group_state" context="{'group_by': 'state'}"/>
+            </search>
+        </field>
+    </record>
+
+    <record id="kits_connector_instance_action" model="ir.actions.act_window">
+        <field name="name">Connector Instances</field>
+        <field name="res_model">kits.connector.instance</field>
+        <field name="view_mode">list,form</field>
+        <field name="search_view_id" ref="kits_connector_instance_view_search"/>
+        <field name="help" type="html">
+            <p class="o_view_nocontent_smiling_face">
+                Create a connector instance
+            </p>
+            <p>
+                Instances store connection settings for each external platform.
+                Platform modules extend this model with their own credentials and sync logic.
+            </p>
+        </field>
+    </record>
+</odoo>

@@ -1,0 +1,16 @@
+<?xml version="1.0" encoding="utf-8"?>
+<odoo>
+    <record id="product_template_form_view_woo" model="ir.ui.view">
+        <field name="name">product.template.form.woocommerce</field>
+        <field name="model">product.template</field>
+        <field name="inherit_id" ref="product.product_template_form_view"/>
+        <field name="arch" type="xml">
+            <xpath expr="//span[@name='sale_option']" position="after">
+                <span class="d-inline-flex">
+                    <field name="woo_sync_to_store" widget="boolean_checkbox" class="w-auto"/>
+                    <label for="woo_sync_to_store"/>
+                </span>
+            </xpath>
+        </field>
+    </record>
+</odoo>

@@ -1,0 +1,141 @@
+<?xml version="1.0" encoding="utf-8"?>
+<odoo>
+    <record id="kits_connector_instance_view_form_woo" model="ir.ui.view">
+        <field name="name">kits.connector.instance.form.woocommerce</field>
+        <field name="model">kits.connector.instance</field>
+        <field name="inherit_id" ref="kits_odoo_base_connector.kits_connector_instance_view_form"/>
+        <field name="arch" type="xml">
+            <xpath expr="//header" position="inside">
+                <button name="action_woo_import_products"
+                        type="object"
+                        string="Import Products"
+                        invisible="platform_type != 'woocommerce'"
+                        groups="kits_odoo_base_connector.group_kits_connector_manager"/>
+                <button name="action_woo_export_products"
+                        type="object"
+                        string="Export Products"
+                        invisible="platform_type != 'woocommerce'"
+                        groups="kits_odoo_base_connector.group_kits_connector_manager"/>
+                <button name="action_woo_import_orders"
+                        type="object"
+                        string="Import Orders"
+                        class="btn-primary"
+                        invisible="platform_type != 'woocommerce'"
+                        groups="kits_odoo_base_connector.group_kits_connector_manager"/>
+                <button name="action_woo_import_customers"
+                        type="object"
+                        string="Import Customers"
+                        invisible="platform_type != 'woocommerce'"
+                        groups="kits_odoo_base_connector.group_kits_connector_manager"/>
+                <button name="action_woo_export_customers"
+                        type="object"
+                        string="Export Customers"
+                        invisible="platform_type != 'woocommerce'"
+                        groups="kits_odoo_base_connector.group_kits_connector_manager"/>
+                <button name="action_woo_export_inventory"
+                        type="object"
+                        string="Export Inventory"
+                        invisible="platform_type != 'woocommerce'"
+                        groups="kits_odoo_base_connector.group_kits_connector_manager"/>
+            </xpath>
+            <!-- Generic base credentials are not used for WooCommerce (consumer key/secret instead) -->
+            <xpath expr="//group[@name='group_credentials']" position="attributes">
+                <attribute name="invisible">platform_type == 'woocommerce'</attribute>
+            </xpath>
+            <xpath expr="//group[@name='group_credentials']" position="after">
+                <group name="group_woo_credentials"
+                       string="WooCommerce Credentials"
+                       invisible="platform_type != 'woocommerce'"
+                       groups="kits_odoo_base_connector.group_kits_connector_manager">
+                    <field name="woo_consumer_key" widget="password"/>
+                    <field name="woo_consumer_secret" widget="password"/>
+                    <field name="woo_api_version"/>
+                </group>
+                <group name="group_woo_settings"
+                       string="WooCommerce Store Settings"
+                       invisible="platform_type != 'woocommerce'">
+                    <field name="warehouse_id"
+                             required="platform_type == 'woocommerce' and (woo_auto_import_orders or woo_auto_export_stock)"/>
+                    <field name="pricelist_id"/>
+                    <field name="sales_team_id"/>
+                    <field name="woo_import_images"/>
+                    <field name="woo_match_by_sku"/>
+                    <field name="woo_allow_unmapped_order_lines"/>
+                    <field name="woo_order_statuses"/>
+                    <field name="woo_auto_import_orders"/>
+                    <field name="woo_auto_import_customers"/>
+                    <field name="woo_auto_export_stock"/>
+                </group>
+            </xpath>
+            <xpath expr="//notebook" position="inside">
+                <page string="WooCommerce Sync Status"
+                      name="woo_status"
+                      invisible="platform_type != 'woocommerce'">
+                    <group>
+                        <group>
+                            <field name="woo_last_product_sync"/>
+                            <field name="woo_last_customer_sync"/>
+                            <field name="woo_last_order_sync"/>
+                            <field name="woo_last_stock_sync"/>
+                        </group>
+                        <group>
+                            <field name="woo_bound_product_count"/>
+                            <field name="woo_bound_customer_count"/>
+                            <field name="woo_imported_order_count"/>
+                            <field name="woo_order_import_failures" widget="text"/>
+                        </group>
+                    </group>
+                </page>
+            </xpath>
+            <xpath expr="//field[@name='base_url']" position="attributes">
+                <attribute name="placeholder">https://your-store.example</attribute>
+            </xpath>
+        </field>
+    </record>
+
+    <record id="kits_connector_instance_view_list_woo" model="ir.ui.view">
+        <field name="name">kits.connector.instance.list.woocommerce</field>
+        <field name="model">kits.connector.instance</field>
+        <field name="inherit_id" ref="kits_odoo_base_connector.kits_connector_instance_view_list"/>
+        <field name="arch" type="xml">
+            <xpath expr="//field[@name='platform_type']" position="after">
+                <field name="warehouse_id" optional="hide"/>
+                <field name="woo_last_order_sync" optional="hide"/>
+            </xpath>
+        </field>
+    </record>
+
+    <record id="kits_connector_instance_view_search_woo" model="ir.ui.view">
+        <field name="name">kits.connector.instance.search.woocommerce</field>
+        <field name="model">kits.connector.instance</field>
+        <field name="inherit_id" ref="kits_odoo_base_connector.kits_connector_instance_view_search"/>
+        <field name="arch" type="xml">
+            <xpath expr="//filter[@name='filter_connected']" position="before">
+                <filter string="WooCommerce"
+                        name="filter_woocommerce"
+                        domain="[('platform_type', '=', 'woocommerce')]"/>
+                <separator/>
+            </xpath>
+        </field>
+    </record>
+
+    <record id="kits_woo_instance_action" model="ir.actions.act_window">
+        <field name="name">WooCommerce Stores</field>
+        <field name="res_model">kits.connector.instance</field>
+        <field name="view_mode">list,form</field>
+        <field name="domain">[('platform_type', '=', 'woocommerce')]</field>
+        <field name="context">{
+            'default_platform_type': 'woocommerce',
+            'search_default_filter_woocommerce': 1,
+        }</field>
+        <field name="help" type="html">
+            <p class="o_view_nocontent_smiling_face">
+                Create a WooCommerce store connection
+            </p>
+            <p>
+                Configure the store URL, REST API consumer key/secret, warehouse, and pricelist.
+                Then use Import/Export actions or enable scheduled sync.
+            </p>
+        </field>
+    </record>
+</odoo>

@@ -1,0 +1,13 @@
+id,name,model_id,group_id/id,operation,domain
+access_kits_connector_instance_user,kits.connector.instance user,kits.connector.instance,kits_odoo_base_connector.group_kits_connector_user,r,
+access_kits_connector_instance_manager,kits.connector.instance manager,kits.connector.instance,kits_odoo_base_connector.group_kits_connector_manager,crud,
+kits_connector_instance_comp_rule,kits.connector.instance multi-company,kits.connector.instance,,crud,"[('company_id', 'in', company_ids)]"
+access_kits_connector_sync_job_user,kits.connector.sync.job user,kits.connector.sync.job,kits_odoo_base_connector.group_kits_connector_user,r,
+access_kits_connector_sync_job_manager,kits.connector.sync.job manager,kits.connector.sync.job,kits_odoo_base_connector.group_kits_connector_manager,crud,
+kits_connector_sync_job_comp_rule,kits.connector.sync.job multi-company,kits.connector.sync.job,,crud,"[('company_id', 'in', company_ids)]"
+access_kits_connector_log_user,kits.connector.log user,kits.connector.log,kits_odoo_base_connector.group_kits_connector_user,r,
+access_kits_connector_log_manager,kits.connector.log manager,kits.connector.log,kits_odoo_base_connector.group_kits_connector_manager,crud,
+kits_connector_log_comp_rule,kits.connector.log multi-company,kits.connector.log,,crud,"[('company_id', 'in', company_ids)]"
+access_kits_connector_binding_user,kits.connector.binding user,kits.connector.binding,kits_odoo_base_connector.group_kits_connector_user,r,
+access_kits_connector_binding_manager,kits.connector.binding manager,kits.connector.binding,kits_odoo_base_connector.group_kits_connector_manager,crud,
+kits_connector_binding_comp_rule,kits.connector.binding multi-company,kits.connector.binding,,crud,"[('company_id', 'in', company_ids)]"

@@ -1,0 +1,44 @@
+<?xml version="1.0" encoding="utf-8"?>
+<odoo>
+    <menuitem id="kits_connector_menu_root"
+              name="Connectors"
+              sequence="45"
+              web_icon="kits_odoo_base_connector,static/description/icon.png"
+              groups="kits_odoo_base_connector.group_kits_connector_user"/>
+
+    <menuitem id="kits_connector_menu_instances"
+              name="Instances"
+              parent="kits_connector_menu_root"
+              action="kits_connector_instance_action"
+              sequence="10"/>
+
+    <menuitem id="kits_connector_menu_sync_jobs"
+              name="Sync Jobs"
+              parent="kits_connector_menu_root"
+              action="kits_connector_sync_job_action"
+              sequence="20"/>
+
+    <menuitem id="kits_connector_menu_logs"
+              name="Logs"
+              parent="kits_connector_menu_root"
+              action="kits_connector_log_action"
+              sequence="30"/>
+
+    <menuitem id="kits_connector_menu_bindings"
+              name="Bindings"
+              parent="kits_connector_menu_root"
+              action="kits_connector_binding_action"
+              sequence="40"/>
+
+    <menuitem id="kits_connector_menu_config"
+              name="Configuration"
+              parent="kits_connector_menu_root"
+              sequence="90"
+              groups="kits_odoo_base_connector.group_kits_connector_manager"/>
+
+    <menuitem id="kits_connector_menu_config_instances"
+              name="Connector Instances"
+              parent="kits_connector_menu_config"
+              action="kits_connector_instance_action"
+              sequence="10"/>
+</odoo>

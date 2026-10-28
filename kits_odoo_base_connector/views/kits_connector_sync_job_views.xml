@@ -1,0 +1,137 @@
+<?xml version="1.0" encoding="utf-8"?>
+<odoo>
+    <record id="kits_connector_sync_job_view_list" model="ir.ui.view">
+        <field name="name">kits.connector.sync.job.list</field>
+        <field name="model">kits.connector.sync.job</field>
+        <field name="arch" type="xml">
+            <list string="Sync Jobs"
+                  decoration-danger="state == 'failed'"
+                  decoration-success="state == 'done'"
+                  decoration-info="state == 'running'"
+                  decoration-muted="state == 'cancelled'">
+                <field name="priority" optional="show"/>
+                <field name="name"/>
+                <field name="instance_id"/>
+                <field name="platform_type" optional="show"/>
+                <field name="job_type"/>
+                <field name="state" widget="badge"
+                         decoration-success="state == 'done'"
+                         decoration-danger="state == 'failed'"
+                         decoration-info="state in ('pending', 'running')"
+                         decoration-muted="state in ('draft', 'cancelled')"/>
+                <field name="scheduled_date"/>
+                <field name="attempt_count"/>
+                <field name="max_retries" optional="hide"/>
+                <field name="company_id" groups="base.group_multi_company" optional="hide"/>
+            </list>
+        </field>
+    </record>
+
+    <record id="kits_connector_sync_job_view_form" model="ir.ui.view">
+        <field name="name">kits.connector.sync.job.form</field>
+        <field name="model">kits.connector.sync.job</field>
+        <field name="arch" type="xml">
+            <form string="Sync Job">
+                <header>
+                    <button name="action_enqueue" type="object" string="Enqueue"
+                            invisible="state not in ('draft', 'failed', 'cancelled')"
+                            groups="kits_odoo_base_connector.group_kits_connector_manager"
+                            class="btn-primary"/>
+                    <button name="action_run_now" type="object" string="Run Now"
+                            invisible="state in ('running', 'done', 'cancelled')"
+                            groups="kits_odoo_base_connector.group_kits_connector_manager"/>
+                    <button name="action_cancel" type="object" string="Cancel"
+                            invisible="state in ('running', 'done', 'cancelled')"
+                            groups="kits_odoo_base_connector.group_kits_connector_manager"/>
+                    <button name="action_reset_to_draft" type="object" string="Reset to Draft"
+                            invisible="state in ('draft', 'running')"
+                            groups="kits_odoo_base_connector.group_kits_connector_manager"/>
+                    <field name="state" widget="statusbar"
+                             statusbar_visible="draft,pending,running,done,failed"/>
+                </header>
+                <sheet>
+                    <div class="oe_title">
+                        <label for="name"/>
+                        <h1>
+                            <field name="name"/>
+                        </h1>
+                    </div>
+                    <group>
+                        <group string="Job">
+                            <field name="instance_id"/>
+                            <field name="platform_type"/>
+                            <field name="job_type"/>
+                            <field name="company_id" groups="base.group_multi_company"/>
+                            <field name="priority"/>
+                            <field name="scheduled_date"/>
+                        </group>
+                        <group string="Execution">
+                            <field name="attempt_count"/>
+                            <field name="max_retries"/>
+                            <field name="started_at"/>
+                            <field name="finished_at"/>
+                        </group>
+                    </group>
+                    <notebook>
+                        <page string="Payload" name="payload">
+                            <field name="payload"/>
+                        </page>
+                        <page string="Result" name="result">
+                            <field name="result_summary"/>
+                            <field name="error_message"/>
+                        </page>
+                        <page string="Logs" name="logs">
+                            <field name="log_ids" readonly="1">
+                                <list>
+                                    <field name="create_date"/>
+                                    <field name="level"/>
+                                    <field name="status"/>
+                                    <field name="message"/>
+                                </list>
+                            </field>
+                        </page>
+                    </notebook>
+                </sheet>
+                <chatter/>
+            </form>
+        </field>
+    </record>
+
+    <record id="kits_connector_sync_job_view_search" model="ir.ui.view">
+        <field name="name">kits.connector.sync.job.search</field>
+        <field name="model">kits.connector.sync.job</field>
+        <field name="arch" type="xml">
+            <search string="Search Sync Jobs">
+                <field name="name"/>
+                <field name="instance_id"/>
+                <field name="job_type"/>
+                <field name="platform_type"/>
+                <filter string="Pending" name="filter_pending" domain="[('state', '=', 'pending')]"/>
+                <filter string="Failed" name="filter_failed" domain="[('state', '=', 'failed')]"/>
+                <filter string="Done" name="filter_done" domain="[('state', '=', 'done')]"/>
+                <filter string="Running" name="filter_running" domain="[('state', '=', 'running')]"/>
+                <separator/>
+                <filter string="Instance" name="group_instance" context="{'group_by': 'instance_id'}"/>
+                <filter string="Job Type" name="group_job_type" context="{'group_by': 'job_type'}"/>
+                <filter string="Status" name="group_state" context="{'group_by': 'state'}"/>
+            </search>
+        </field>
+    </record>
+
+    <record id="kits_connector_sync_job_action" model="ir.actions.act_window">
+        <field name="name">Sync Jobs</field>
+        <field name="res_model">kits.connector.sync.job</field>
+        <field name="view_mode">list,form</field>
+        <field name="search_view_id" ref="kits_connector_sync_job_view_search"/>
+        <field name="context">{'search_default_filter_pending': 1}</field>
+        <field name="help" type="html">
+            <p class="o_view_nocontent_smiling_face">
+                No sync jobs yet
+            </p>
+            <p>
+                Sync jobs are created by connector instances or platform modules and
+                processed by the background cron or the Run Now action.
+            </p>
+        </field>
+    </record>
+</odoo>

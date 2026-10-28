@@ -1,0 +1,96 @@
+<?xml version="1.0" encoding="utf-8"?>
+<odoo>
+    <record id="kits_connector_log_view_list" model="ir.ui.view">
+        <field name="name">kits.connector.log.list</field>
+        <field name="model">kits.connector.log</field>
+        <field name="arch" type="xml">
+            <list string="Connector Logs" create="false" edit="false"
+                  decoration-danger="level == 'error' or status == 'failure'"
+                  decoration-warning="level == 'warning'">
+                <field name="create_date"/>
+                <field name="instance_id"/>
+                <field name="platform_type" optional="show"/>
+                <field name="name"/>
+                <field name="level" widget="badge"
+                         decoration-danger="level == 'error'"
+                         decoration-warning="level == 'warning'"
+                         decoration-info="level == 'info'"/>
+                <field name="status" widget="badge"
+                         decoration-success="status == 'success'"
+                         decoration-danger="status == 'failure'"/>
+                <field name="message"/>
+                <field name="job_id" optional="hide"/>
+                <field name="company_id" groups="base.group_multi_company" optional="hide"/>
+            </list>
+        </field>
+    </record>
+
+    <record id="kits_connector_log_view_form" model="ir.ui.view">
+        <field name="name">kits.connector.log.form</field>
+        <field name="model">kits.connector.log</field>
+        <field name="arch" type="xml">
+            <form string="Connector Log" create="false" edit="false">
+                <sheet>
+                    <group>
+                        <group>
+                            <field name="name"/>
+                            <field name="instance_id"/>
+                            <field name="platform_type"/>
+                            <field name="job_id"/>
+                            <field name="company_id" groups="base.group_multi_company"/>
+                        </group>
+                        <group>
+                            <field name="level"/>
+                            <field name="status"/>
+                            <field name="create_date"/>
+                            <field name="message"/>
+                        </group>
+                    </group>
+                    <notebook>
+                        <page string="Details" name="details">
+                            <field name="details"/>
+                        </page>
+                        <page string="Request / Response" name="io">
+                            <group>
+                                <field name="request_data"/>
+                                <field name="response_data"/>
+                            </group>
+                        </page>
+                    </notebook>
+                </sheet>
+            </form>
+        </field>
+    </record>
+
+    <record id="kits_connector_log_view_search" model="ir.ui.view">
+        <field name="name">kits.connector.log.search</field>
+        <field name="model">kits.connector.log</field>
+        <field name="arch" type="xml">
+            <search string="Search Connector Logs">
+                <field name="name"/>
+                <field name="message"/>
+                <field name="instance_id"/>
+                <field name="job_id"/>
+                <filter string="Failures" name="filter_failure" domain="[('status', '=', 'failure')]"/>
+                <filter string="Errors" name="filter_error" domain="[('level', '=', 'error')]"/>
+                <filter string="Warnings" name="filter_warning" domain="[('level', '=', 'warning')]"/>
+                <separator/>
+                <filter string="Instance" name="group_instance" context="{'group_by': 'instance_id'}"/>
+                <filter string="Operation" name="group_operation" context="{'group_by': 'name'}"/>
+                <filter string="Status" name="group_status" context="{'group_by': 'status'}"/>
+            </search>
+        </field>
+    </record>
+
+    <record id="kits_connector_log_action" model="ir.actions.act_window">
+        <field name="name">Connector Logs</field>
+        <field name="res_model">kits.connector.log</field>
+        <field name="view_mode">list,form</field>
+        <field name="search_view_id" ref="kits_connector_log_view_search"/>
+        <field name="help" type="html">
+            <p class="o_view_nocontent_smiling_face">
+                No connector logs yet
+            </p>
+        </field>
+    </record>
+</odoo>
