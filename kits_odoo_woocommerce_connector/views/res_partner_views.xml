@@ -1,0 +1,101 @@
+<?xml version="1.0" encoding="utf-8"?>
+<odoo>
+    <delete model="ir.actions.server" id="action_woo_export_customers_selected"/>
+
+    <record id="view_partner_form_woo_connector" model="ir.ui.view">
+        <field name="name">res.partner.form.woocommerce</field>
+        <field name="model">res.partner</field>
+        <field name="inherit_id" ref="base.view_partner_form"/>
+        <field name="visibility">public</field>
+        <field name="arch" type="xml">
+            <xpath expr="//div[@name='button_box']" position="inside">
+                <button name="action_kits_open_bindings"
+                        type="object"
+                        class="oe_stat_button"
+                        icon="link"
+                        invisible="kits_binding_count == 0"
+                        groups="kits_odoo_base_connector.group_kits_connector_user">
+                    <field name="kits_binding_count" widget="statinfo" string="Bindings"/>
+                </button>
+                <button name="action_woo_import_from_store"
+                        type="object"
+                        class="oe_stat_button"
+                        icon="sync_alt"
+                        groups="kits_odoo_base_connector.group_kits_connector_manager"
+                        invisible="parent_id or woo_binding_count == 0">
+                    <div class="o_stat_info">
+                        <span class="o_stat_text">Update from</span>
+                        <span class="o_stat_text">WooCommerce</span>
+                    </div>
+                </button>
+                <button name="action_woo_fetch_customer"
+                        type="object"
+                        class="oe_stat_button"
+                        icon="manage_search"
+                        groups="kits_odoo_base_connector.group_kits_connector_manager"
+                        invisible="parent_id">
+                    <div class="o_stat_info">
+                        <span class="o_stat_text">Fetch</span>
+                        <span class="o_stat_text">Customer</span>
+                    </div>
+                </button>
+            </xpath>
+            <xpath expr="//field[@name='website']" position="before">
+                <field name="woo_company_name" invisible="not woo_company_name"/>
+            </xpath>
+            <xpath expr="//notebook" position="inside">
+                <page string="Connectors"
+                      name="kits_connectors"
+                      groups="kits_odoo_base_connector.group_kits_connector_user"
+                      invisible="parent_id">
+                    <group>
+                        <field name="kits_connected_instance_ids"
+                                 widget="many2many_tags"
+                                 options="{'no_create': True}"
+                                 readonly="1"/>
+                    </group>
+                    <group string="WooCommerce" name="woo_customer_sync">
+                        <field name="woo_sync_state"/>
+                        <field name="woo_binding_count"/>
+                    </group>
+                </page>
+            </xpath>
+        </field>
+    </record>
+
+    <record id="view_partner_tree_woo_connector" model="ir.ui.view">
+        <field name="name">res.partner.list.woocommerce</field>
+        <field name="model">res.partner</field>
+        <field name="inherit_id" ref="base.view_partner_tree"/>
+        <field name="visibility">public</field>
+        <field name="arch" type="xml">
+            <xpath expr="//list" position="inside">
+                <field name="woo_sync_state" optional="hide"/>
+            </xpath>
+        </field>
+    </record>
+
+    <record id="action_woo_import_customers_selected" model="ir.actions.server">
+        <field name="name">Update from WooCommerce</field>
+        <field name="model_id" ref="base.model_res_partner"/>
+        <field name="binding_model_id" ref="base.model_res_partner"/>
+        <field name="binding_view_types">list</field>
+        <field name="state">code</field>
+        <field name="code">
+if records:
+    action = records.action_woo_import_from_store()
+        </field>
+    </record>
+
+    <record id="action_woo_fetch_customer_selected" model="ir.actions.server">
+        <field name="name">Fetch Customer from WooCommerce</field>
+        <field name="model_id" ref="base.model_res_partner"/>
+        <field name="binding_model_id" ref="base.model_res_partner"/>
+        <field name="binding_view_types">list,form</field>
+        <field name="state">code</field>
+        <field name="code">
+if records:
+    action = records[:1].action_woo_fetch_customer()
+        </field>
+    </record>
+</odoo>

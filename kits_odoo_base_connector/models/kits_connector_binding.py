@@ -57,6 +57,33 @@ class KitsConnectorBinding(models.Model):
         default=fields.Datetime.now,
         required=True,
     )
+    sync_state = fields.Selection(
+        selection=[
+            ('synced', 'Synced'),
+            ('not_synced', 'Not Synced'),
+            ('error', 'Error'),
+            ('deleted', 'Deleted Remote'),
+            ('deleted_local', 'Deleted Local'),
+        ],
+        default='not_synced',
+        required=True,
+        index=True,
+        help='Per-instance sync status for this Odoo ↔ external mapping. '
+             'Mapped field edits set Not Synced; successful push/pull sets Synced. '
+             'Remote deletion sets Deleted Remote and keeps the Odoo record. '
+             'Deleting the Odoo record sets Deleted Local and does not delete the remote record. '
+             'Neither state is a license to recreate the missing side automatically.',
+    )
+    sync_error = fields.Text(
+        string='Last Sync Error',
+        copy=False,
+        help='Last failure message for this binding. Never store secrets here.',
+    )
+    sync_version = fields.Integer(
+        default=0,
+        copy=False,
+        help='Monotonic counter used to ignore stale sync jobs that finish after a newer edit.',
+    )
     active = fields.Boolean(default=True)
 
     _external_uniq = models.Constraint(
@@ -153,6 +180,8 @@ class KitsConnectorBinding(models.Model):
             'odoo_record_id': odoo_record_id,
             'external_id': external_id,
             'sync_date': sync_date or fields.Datetime.now(),
+            'sync_state': 'synced',
+            'sync_error': False,
             'active': True,
         }
         if external_data is not None:
@@ -173,8 +202,10 @@ class KitsConnectorBinding(models.Model):
                     raise UserError(self.env._(
                         'Cannot update binding: another binding already uses this mapping.'
                     ))
+            vals['sync_version'] = binding.sync_version + 1
             binding.write(vals)
             return binding
+        vals['sync_version'] = 1
         return self.create(vals)
 
     def _kits_get_odoo_record(self):
@@ -183,6 +214,112 @@ class KitsConnectorBinding(models.Model):
         if self.odoo_model not in self.env:
             return self.browse()
         return self.env[self.odoo_model].browse(self.odoo_record_id).exists()
+
+    def _kits_mark_not_synced(self, *, error=False):
+        """Mark bindings as needing export/import. Bumps sync_version for stale-job checks."""
+        for binding in self:
+            vals = {
+                'sync_state': 'error' if error else 'not_synced',
+                'sync_version': binding.sync_version + 1,
+            }
+            if error:
+                vals['sync_error'] = error
+            else:
+                vals['sync_error'] = False
+            binding.write(vals)
+        return True
+
+    def _kits_mark_synced(self, *, sync_date=False):
+        self.write({
+            'sync_state': 'synced',
+            'sync_error': False,
+            'sync_date': sync_date or fields.Datetime.now(),
+        })
+        return True
+
+    def _kits_mark_error(self, message):
+        self.write({
+            'sync_state': 'error',
+            'sync_error': message or False,
+        })
+        return True
+
+    def _kits_mark_deleted_remote(self, *, message=False):
+        """Mark bindings as deleted on the external platform without archiving the Odoo record.
+
+        The binding stays searchable (active) so operators can see the unavailable mapping.
+        Repeated calls are idempotent.
+        """
+        self.write({
+            'sync_state': 'deleted',
+            'sync_error': message or False,
+            'sync_date': fields.Datetime.now(),
+        })
+        return True
+
+    def _kits_mark_deleted_local(self, *, message=False):
+        """Mark bindings when the Odoo record is removed. Does not call any remote API.
+
+        Repeated calls are idempotent. The binding stays active for history.
+        """
+        self.write({
+            'sync_state': 'deleted_local',
+            'sync_error': message or False,
+            'sync_date': fields.Datetime.now(),
+        })
+        return True
+
+    @api.model
+    def _kits_mark_odoo_records_deleted_local(self, odoo_model, record_ids, message=False):
+        """Flag bindings for records that are being deleted in Odoo.
+
+        Search uses sudo so a user who can delete the business record but is not a
+        connector administrator still leaves an accurate local-deletion flag. The
+        domain is limited to that user's companies — this does not grant access to
+        other companies or perform a remote delete.
+        """
+        ids = [int(i) for i in record_ids if i]
+        if not ids:
+            return self.browse()
+        bindings = self.sudo().search([
+            ('odoo_model', '=', odoo_model),
+            ('odoo_record_id', 'in', ids),
+            ('company_id', 'in', self.env.companies.ids),
+        ])
+        if bindings:
+            bindings._kits_mark_deleted_local(message=message)
+        return bindings
+
+    @api.model
+    def _kits_mark_records_not_synced(self, odoo_model, record_ids, *, instance=None, company=None):
+        """Mark bindings for Odoo records as Not Synced (optionally limited to one instance).
+
+        Deleted-remote and deleted-local mappings are left unchanged so a later edit
+        cannot queue them for automatic recreation.
+        """
+        if not record_ids:
+            return self.browse()
+        domain = [
+            ('odoo_model', '=', odoo_model),
+            ('odoo_record_id', 'in', [int(i) for i in record_ids]),
+            ('active', '=', True),
+            ('sync_state', 'not in', ('deleted', 'deleted_local')),
+        ]
+        if instance:
+            domain.append(('instance_id', '=', instance.id))
+        if company:
+            domain.append(('company_id', '=', company.id))
+        bindings = self.search(domain)
+        if bindings:
+            bindings._kits_mark_not_synced()
+        return bindings
+
+    def _kits_is_stale_job(self, expected_version):
+        """Return True when a newer edit happened after the job was enqueued."""
+        self.ensure_one()
+        if expected_version is None or expected_version is False:
+            return False
+        return int(expected_version) < int(self.sync_version or 0)
 
     def action_open_odoo_record(self):
         self.ensure_one()

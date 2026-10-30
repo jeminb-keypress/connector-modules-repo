@@ -6,6 +6,12 @@
         <field name="inherit_id" ref="kits_odoo_base_connector.kits_connector_instance_view_form"/>
         <field name="arch" type="xml">
             <xpath expr="//header" position="inside">
+                <button name="action_woo_open_sync_wizard"
+                        type="object"
+                        string="Sync Operation"
+                        class="btn-secondary"
+                        invisible="platform_type != 'woocommerce'"
+                        groups="kits_odoo_base_connector.group_kits_connector_manager"/>
                 <button name="action_woo_import_products"
                         type="object"
                         string="Import Products"
@@ -27,15 +33,50 @@
                         string="Import Customers"
                         invisible="platform_type != 'woocommerce'"
                         groups="kits_odoo_base_connector.group_kits_connector_manager"/>
-                <button name="action_woo_export_customers"
-                        type="object"
-                        string="Export Customers"
-                        invisible="platform_type != 'woocommerce'"
-                        groups="kits_odoo_base_connector.group_kits_connector_manager"/>
                 <button name="action_woo_export_inventory"
                         type="object"
                         string="Export Inventory"
                         invisible="platform_type != 'woocommerce'"
+                        groups="kits_odoo_base_connector.group_kits_connector_manager"/>
+                <button name="action_woo_import_categories"
+                        type="object"
+                        string="Import Categories"
+                        invisible="platform_type != 'woocommerce'"
+                        groups="kits_odoo_base_connector.group_kits_connector_manager"/>
+                <button name="action_woo_import_attributes"
+                        type="object"
+                        string="Import Attributes"
+                        invisible="platform_type != 'woocommerce'"
+                        groups="kits_odoo_base_connector.group_kits_connector_manager"/>
+                <button name="action_woo_import_coupons"
+                        type="object"
+                        string="Import Coupons"
+                        invisible="platform_type != 'woocommerce'"
+                        groups="kits_odoo_base_connector.group_kits_connector_manager"/>
+                <button name="action_woo_export_coupons"
+                        type="object"
+                        string="Export Coupons"
+                        invisible="platform_type != 'woocommerce'"
+                        groups="kits_odoo_base_connector.group_kits_connector_manager"/>
+                <button name="action_woo_register_customer_webhooks"
+                        type="object"
+                        string="Register Customer Webhooks"
+                        invisible="platform_type != 'woocommerce'"
+                        groups="kits_odoo_base_connector.group_kits_connector_manager"/>
+                <button name="action_woo_unregister_customer_webhooks"
+                        type="object"
+                        string="Unregister Customer Webhooks"
+                        invisible="platform_type != 'woocommerce' or not woo_webhook_enabled"
+                        groups="kits_odoo_base_connector.group_kits_connector_manager"/>
+                <button name="action_woo_register_resource_webhooks"
+                        type="object"
+                        string="Register Catalog/Order Webhooks"
+                        invisible="platform_type != 'woocommerce'"
+                        groups="kits_odoo_base_connector.group_kits_connector_manager"/>
+                <button name="action_woo_unregister_resource_webhooks"
+                        type="object"
+                        string="Unregister Catalog/Order Webhooks"
+                        invisible="platform_type != 'woocommerce' or not woo_resource_webhooks_enabled"
                         groups="kits_odoo_base_connector.group_kits_connector_manager"/>
             </xpath>
             <!-- Generic base credentials are not used for WooCommerce (consumer key/secret instead) -->
@@ -64,6 +105,7 @@
                     <field name="woo_order_statuses"/>
                     <field name="woo_auto_import_orders"/>
                     <field name="woo_auto_import_customers"/>
+                    <field name="woo_auto_export_products"/>
                     <field name="woo_auto_export_stock"/>
                 </group>
             </xpath>
@@ -77,6 +119,8 @@
                             <field name="woo_last_customer_sync"/>
                             <field name="woo_last_order_sync"/>
                             <field name="woo_last_stock_sync"/>
+                            <field name="woo_last_catalog_sync"/>
+                            <field name="woo_last_coupon_sync"/>
                         </group>
                         <group>
                             <field name="woo_bound_product_count"/>
@@ -85,6 +129,119 @@
                             <field name="woo_order_import_failures" widget="text"/>
                         </group>
                     </group>
+                </page>
+                <page string="Webhooks"
+                      name="woo_webhooks"
+                      invisible="platform_type != 'woocommerce'"
+                      groups="kits_odoo_base_connector.group_kits_connector_manager">
+                    <group>
+                        <group string="Delivery">
+                            <field name="woo_webhook_public_base_url"
+                                    placeholder="https://odoo.example.com"/>
+                            <field name="woo_webhook_resource_base_url" readonly="1"/>
+                            <field name="woo_webhook_endpoint_url" readonly="1"/>
+                            <field name="woo_webhook_enabled" readonly="1"/>
+                            <field name="woo_resource_webhooks_enabled" readonly="1"/>
+                            <field name="woo_webhook_secret" widget="password"/>
+                        </group>
+                        <group string="Registered Topics">
+                            <field name="woo_webhook_ids" readonly="1" nolabel="1" colspan="2"/>
+                        </group>
+                    </group>
+                    <div class="alert alert-info" role="status">
+                        WooCommerce must reach a public HTTPS Odoo URL (or a tunnel /
+                        local URL in development). Supported resources: customers,
+                        products, orders, coupons. HMAC-SHA256 verification applies
+                        to all. Remote deletes mark bindings Deleted Remote and never
+                        auto-delete Odoo records. Product webhooks ignore Woo stock
+                        quantities (Odoo remains inventory source of truth).
+                        Multi-DB: prefer dbfilter/single DB. If using X-Odoo-Database,
+                        set system parameter kits_woo.webhook_db_allowlist to an
+                        explicit comma-separated allowlist (arbitrary DB names are rejected).
+                    </div>
+                </page>
+                <page string="Payment &amp; Shipping Maps"
+                      name="woo_maps"
+                      invisible="platform_type != 'woocommerce'"
+                      groups="kits_odoo_base_connector.group_kits_connector_manager">
+                    <group>
+                        <button name="action_woo_fetch_payment_gateways"
+                                type="object"
+                                string="Fetch Payment Gateways"
+                                class="btn-secondary"
+                                icon="payments"/>
+                        <button name="action_woo_fetch_shipping_methods"
+                                type="object"
+                                string="Fetch Shipping Methods"
+                                class="btn-secondary"
+                                icon="local_shipping"/>
+                    </group>
+                    <separator string="Payment Gateways"/>
+                    <field name="woo_payment_gateway_map_ids" nolabel="1">
+                        <list editable="bottom">
+                            <field name="woo_gateway_id"/>
+                            <field name="woo_title"/>
+                            <field name="woo_enabled"/>
+                            <field name="payment_method_id"/>
+                            <field name="active"/>
+                            <field name="notes" optional="hide"/>
+                        </list>
+                    </field>
+                    <separator string="Shipping Methods"/>
+                    <field name="woo_shipping_method_map_ids" nolabel="1">
+                        <list editable="bottom">
+                            <field name="woo_method_id"/>
+                            <field name="woo_method_title"/>
+                            <field name="carrier_id"/>
+                            <field name="delivery_product_id"/>
+                            <field name="active"/>
+                            <field name="notes" optional="hide"/>
+                        </list>
+                    </field>
+                    <div class="alert alert-warning" role="status">
+                        Mappings are applied during order import for carrier and
+                        shipping product selection. They never create accounting
+                        payments or invent delivery pickings.
+                    </div>
+                </page>
+                <page string="Tax Maps"
+                      name="woo_tax_maps"
+                      invisible="platform_type != 'woocommerce'"
+                      groups="kits_odoo_base_connector.group_kits_connector_manager">
+                    <group>
+                        <group>
+                            <field name="woo_tax_mapping_mode"/>
+                            <field name="woo_tax_total_tolerance"/>
+                            <field name="woo_auto_post_credit_notes"/>
+                        </group>
+                        <group>
+                            <button name="action_woo_fetch_tax_rates"
+                                    type="object"
+                                    string="Fetch Tax Rates"
+                                    class="btn-secondary"
+                                    icon="percent"/>
+                        </group>
+                    </group>
+                    <field name="woo_tax_map_ids" nolabel="1">
+                        <list editable="bottom">
+                            <field name="woo_rate_id"/>
+                            <field name="woo_tax_class"/>
+                            <field name="woo_rate"/>
+                            <field name="woo_name" optional="show"/>
+                            <field name="tax_id"/>
+                            <field name="is_zero_rated"/>
+                            <field name="match_price_include"/>
+                            <field name="active"/>
+                            <field name="notes" optional="hide"/>
+                        </list>
+                    </field>
+                    <div class="alert alert-info" role="status">
+                        Map WooCommerce tax rate ids/classes to existing Odoo sales taxes.
+                        Zero/Exempt forces no tax. Missing mappings fail in
+                        “Require Mapped Taxes” mode; otherwise the documented fallback applies.
+                        Tax total discrepancies are reported on the sales order and never
+                        silently rewrite accounting.
+                    </div>
                 </page>
             </xpath>
             <xpath expr="//field[@name='base_url']" position="attributes">

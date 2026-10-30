@@ -10,6 +10,11 @@
                 <field name="odoo_model"/>
                 <field name="odoo_record_id"/>
                 <field name="external_id"/>
+                <field name="sync_state" widget="badge"
+                         decoration-success="sync_state == 'synced'"
+                         decoration-warning="sync_state == 'not_synced'"
+                         decoration-danger="sync_state == 'error'"
+                         decoration-muted="sync_state in ('deleted', 'deleted_local')"/>
                 <field name="sync_date"/>
                 <field name="company_id" groups="base.group_multi_company" optional="hide"/>
                 <field name="active" column_invisible="True"/>
@@ -38,7 +43,10 @@
                             <field name="odoo_model"/>
                             <field name="odoo_record_id"/>
                             <field name="external_id"/>
+                            <field name="sync_state"/>
+                            <field name="sync_version"/>
                             <field name="sync_date"/>
+                            <field name="sync_error"/>
                             <field name="active"/>
                         </group>
                         <group string="External Data">
@@ -59,10 +67,16 @@
                 <field name="odoo_model"/>
                 <field name="odoo_record_id"/>
                 <field name="instance_id"/>
+                <filter string="Not Synced" name="filter_not_synced" domain="[('sync_state', '=', 'not_synced')]"/>
+                <filter string="Synced" name="filter_synced" domain="[('sync_state', '=', 'synced')]"/>
+                <filter string="Error" name="filter_sync_error" domain="[('sync_state', '=', 'error')]"/>
+                <filter string="Deleted Remote" name="filter_deleted_remote" domain="[('sync_state', '=', 'deleted')]"/>
+                <filter string="Deleted Local" name="filter_deleted_local" domain="[('sync_state', '=', 'deleted_local')]"/>
                 <filter string="Archived" name="filter_inactive" domain="[('active', '=', False)]"/>
                 <separator/>
                 <filter string="Instance" name="group_instance" context="{'group_by': 'instance_id'}"/>
                 <filter string="Odoo Model" name="group_model" context="{'group_by': 'odoo_model'}"/>
+                <filter string="Sync Status" name="group_sync_state" context="{'group_by': 'sync_state'}"/>
             </search>
         </field>
     </record>

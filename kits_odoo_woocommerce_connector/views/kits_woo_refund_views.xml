@@ -1,0 +1,73 @@
+<?xml version="1.0" encoding="utf-8"?>
+<odoo>
+    <record id="kits_woo_refund_view_list" model="ir.ui.view">
+        <field name="name">kits.woo.refund.list</field>
+        <field name="model">kits.woo.refund</field>
+        <field name="arch" type="xml">
+            <list>
+                <field name="name"/>
+                <field name="instance_id"/>
+                <field name="sale_order_id"/>
+                <field name="woo_order_id"/>
+                <field name="woo_refund_id"/>
+                <field name="amount"/>
+                <field name="currency_id" optional="hide"/>
+                <field name="state" widget="badge"
+                         decoration-success="state == 'done'"
+                         decoration-warning="state == 'review'"
+                         decoration-danger="state == 'error'"
+                         decoration-muted="state == 'skipped'"/>
+                <field name="credit_note_id"/>
+                <field name="invoice_id" optional="hide"/>
+            </list>
+        </field>
+    </record>
+
+    <record id="kits_woo_refund_view_form" model="ir.ui.view">
+        <field name="name">kits.woo.refund.form</field>
+        <field name="model">kits.woo.refund</field>
+        <field name="arch" type="xml">
+            <form>
+                <header>
+                    <button name="action_retry_refund_sync"
+                            type="object"
+                            string="Retry Sync"
+                            class="btn-primary"
+                            invisible="state == 'done'"
+                            groups="kits_odoo_base_connector.group_kits_connector_manager"/>
+                    <field name="state" widget="statusbar"
+                           statusbar_visible="pending,review,done,error,skipped"/>
+                </header>
+                <sheet>
+                    <group>
+                        <group>
+                            <field name="instance_id"/>
+                            <field name="sale_order_id"/>
+                            <field name="woo_order_id"/>
+                            <field name="woo_refund_id"/>
+                            <field name="amount"/>
+                            <field name="currency_id"/>
+                        </group>
+                        <group>
+                            <field name="invoice_id"/>
+                            <field name="credit_note_id"/>
+                            <field name="woo_reason"/>
+                            <field name="retry_count"/>
+                            <field name="company_id" groups="base.group_multi_company"/>
+                        </group>
+                    </group>
+                    <group string="Diagnostics">
+                        <field name="error_message"/>
+                        <field name="line_payload"/>
+                    </group>
+                </sheet>
+            </form>
+        </field>
+    </record>
+
+    <record id="kits_woo_refund_action" model="ir.actions.act_window">
+        <field name="name">WooCommerce Refunds</field>
+        <field name="res_model">kits.woo.refund</field>
+        <field name="view_mode">list,form</field>
+    </record>
+</odoo>

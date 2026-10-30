@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 {
     'name': 'Kits Odoo Base Connector',
-    'version': '20.0.1.1.0',
+    'version': '20.0.1.8.0',
     'category': 'Productivity',
     'summary': 'Reusable integration framework for marketplace and ERP connectors',
     'description': """

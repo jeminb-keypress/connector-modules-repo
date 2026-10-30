@@ -5,12 +5,92 @@
         <field name="model">product.template</field>
         <field name="inherit_id" ref="product.product_template_form_view"/>
         <field name="arch" type="xml">
+            <xpath expr="//div[@name='button_box']" position="inside">
+                <button name="action_woo_export_to_store"
+                        type="object"
+                        class="oe_stat_button"
+                        icon="cloud_upload"
+                        groups="kits_odoo_base_connector.group_kits_connector_manager">
+                    <div class="o_stat_info">
+                        <span class="o_stat_text">Export to</span>
+                        <span class="o_stat_text">WooCommerce</span>
+                    </div>
+                </button>
+                <button name="action_woo_import_from_store"
+                        type="object"
+                        class="oe_stat_button"
+                        icon="sync_alt"
+                        groups="kits_odoo_base_connector.group_kits_connector_manager"
+                        invisible="woo_binding_count == 0">
+                    <div class="o_stat_info">
+                        <span class="o_stat_text">Update from</span>
+                        <span class="o_stat_text">WooCommerce</span>
+                    </div>
+                </button>
+            </xpath>
             <xpath expr="//span[@name='sale_option']" position="after">
                 <span class="d-inline-flex">
                     <field name="woo_sync_to_store" widget="boolean_checkbox" class="w-auto"/>
                     <label for="woo_sync_to_store"/>
                 </span>
             </xpath>
+            <xpath expr="//page[@name='general_information']" position="after">
+                <page string="WooCommerce" name="woo_commerce"
+                      groups="kits_odoo_base_connector.group_kits_connector_user">
+                    <group>
+                        <field name="woo_instance_ids"
+                                 widget="many2many_tags"
+                                 options="{'no_create': True}"
+                                 placeholder="Select store(s) to export to"/>
+                        <field name="woo_sync_to_store"/>
+                        <field name="woo_sync_state"/>
+                        <field name="woo_binding_count"/>
+                        <field name="woo_catalog_visibility"/>
+                        <field name="woo_featured"/>
+                    </group>
+                    <div class="text-muted" colspan="2">
+                        Export (manual, store Export Products, or Auto Export Products cron)
+                        only pushes this product to the stores selected above.
+                    </div>
+                </page>
+            </xpath>
+        </field>
+    </record>
+
+    <record id="product_template_view_list_woo" model="ir.ui.view">
+        <field name="name">product.template.list.woocommerce</field>
+        <field name="model">product.template</field>
+        <field name="inherit_id" ref="product.product_template_tree_view"/>
+        <field name="arch" type="xml">
+            <xpath expr="//field[@name='list_price']" position="after">
+                <field name="woo_sync_state" optional="hide"/>
+                <field name="woo_sync_to_store" optional="hide"/>
+                <field name="woo_instance_ids" widget="many2many_tags" optional="hide"/>
+            </xpath>
+        </field>
+    </record>
+
+    <record id="action_woo_export_products_selected" model="ir.actions.server">
+        <field name="name">Export to WooCommerce</field>
+        <field name="model_id" ref="product.model_product_template"/>
+        <field name="binding_model_id" ref="product.model_product_template"/>
+        <field name="binding_view_types">list</field>
+        <field name="state">code</field>
+        <field name="code">
+if records:
+    action = records.action_woo_export_to_store()
+        </field>
+    </record>
+
+    <record id="action_woo_import_products_selected" model="ir.actions.server">
+        <field name="name">Update from WooCommerce</field>
+        <field name="model_id" ref="product.model_product_template"/>
+        <field name="binding_model_id" ref="product.model_product_template"/>
+        <field name="binding_view_types">list</field>
+        <field name="state">code</field>
+        <field name="code">
+if records:
+    action = records.action_woo_import_from_store()
         </field>
     </record>
 </odoo>

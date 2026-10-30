@@ -1,11 +1,11 @@
 # -*- coding: utf-8 -*-
-"""Dedicated WooCommerce customer import/export (res.partner).
+"""Dedicated WooCommerce customer import (res.partner). Odoo→Woo customer export is not supported.
 
-Matching order:
-1. Existing store binding for res.partner
-2. Validated email match (same company, top-level, not bound to another Woo customer on this store)
-3. Create new partner
+Matching for registered Woo customers (per instance):
+1. Existing binding for this instance + Woo customer ID → update that partner
+2. Otherwise create a **new** Odoo partner and bind it
 
+Never merge across instances (or onto an unbound partner) using only email/phone.
 Guest checkout (customer_id 0 / missing) must not create customer bindings — handled by orders.
 """
 
@@ -22,10 +22,44 @@ class KitsConnectorInstanceCustomer(models.Model):
     def _woo_import_customers(self, job=None):
         self.ensure_one()
         api = self._woo_api()
+        payload = (job.payload if job else None) or {}
+        woo_ids = self._woo_parse_id_list(payload.get('woo_ids'))
+        modified_after = payload.get('modified_after')
         created = updated = skipped = failed = 0
         errors = []
 
-        for woo_customer in api.get_customers(role='all'):
+        if woo_ids:
+            customers = []
+            for cid in woo_ids:
+                try:
+                    remote = api.get_customer(cid)
+                    if remote.get('id'):
+                        customers.append(remote)
+                    else:
+                        skipped += 1
+                except Exception as exc:  # noqa: BLE001
+                    if self._woo_is_not_found(exc):
+                        binding = self._woo_binding()._kits_find_binding(
+                            self, 'res.partner', external_id=str(cid),
+                        )
+                        if binding:
+                            binding._kits_mark_deleted_remote(message=self.env._(
+                                'WooCommerce customer %(id)s was not found. '
+                                'The Odoo contact was kept.',
+                                id=cid,
+                            ))
+                        skipped += 1
+                        continue
+                    failed += 1
+                    errors.append(f'Customer {cid}: {exc}')
+            customer_iter = customers
+        else:
+            params = {'role': 'all'}
+            if modified_after:
+                params['modified_after'] = str(modified_after).replace(' ', 'T')
+            customer_iter = api.get_customers(**params)
+
+        for woo_customer in customer_iter:
             try:
                 result = self._woo_import_one_customer(woo_customer, job=job)
                 if result == 'created':
@@ -70,41 +104,38 @@ class KitsConnectorInstanceCustomer(models.Model):
             return 'skipped'
 
         vals = self._woo_prepare_partner_vals(woo_customer)
-        partner.write(vals)
-        self._woo_sync_customer_addresses(partner, woo_customer)
-        self._woo_bind('res.partner', partner.id, woo_id, external_data={
-            'email': woo_customer.get('email'),
-            'username': woo_customer.get('username'),
-        })
+        if result == 'created' and woo_customer.get('username'):
+            vals['ref'] = woo_customer.get('username')
+        partner.with_context(kits_woo_skip_dirty=True).write(vals)
+        self._woo_bind(
+            'res.partner', partner.id, woo_id,
+            external_data=self._woo_customer_external_data(woo_customer),
+        )
         return result
 
     def _woo_match_or_create_customer(self, woo_customer):
-        """Return (partner, 'created'|'updated') using binding → email → create."""
+        """Return (partner, 'created'|'updated') using binding only, then create.
+
+        Same email/phone on a different instance (or an unbound Odoo contact) must
+        not reuse that record — each instance mapping gets its own partner.
+        """
         self.ensure_one()
         woo_id = woo_customer.get('id')
         existing = self._woo_find_odoo('res.partner', woo_id)
         if existing:
             return existing, 'updated'
 
-        email = (woo_customer.get('email') or '').strip()
-        partner = self._woo_find_partner_by_email(email) if email else self.env['res.partner']
-        if partner:
-            # Do not steal a partner already bound to a different Woo customer on this store
-            other = self._woo_binding()._kits_find_binding(
-                self, 'res.partner', odoo_record_id=partner.id,
-            )
-            if other and str(other.external_id) != str(woo_id):
-                partner = self.env['res.partner']
-            else:
-                return partner, 'updated'
-
         vals = self._woo_prepare_partner_vals(woo_customer)
+        email = (woo_customer.get('email') or '').strip()
         if not vals.get('name'):
             vals['name'] = email or f'WooCommerce Customer {woo_id}'
-        partner = self.env['res.partner'].with_company(self.company_id).create(vals)
+        partner = self.env['res.partner'].with_company(self.company_id).with_context(
+            kits_woo_skip_dirty=True,
+        ).create(vals)
         return partner, 'created'
 
     def _woo_find_partner_by_email(self, email):
+        """Guest/order helper only — registered customer sync does not merge by email."""
         self.ensure_one()
         if not email:
             return self.env['res.partner']
@@ -123,20 +154,42 @@ class KitsConnectorInstanceCustomer(models.Model):
         company_name = (billing.get('company') or '').strip()
         if company_name and not name:
             name = company_name
-        elif company_name and name and company_name.lower() not in name.lower():
-            # Odoo 20 dropped res.partner.company_name; keep company in display name
-            name = f'{name} ({company_name})'
+            company_name = ''
+        elif company_name == name:
+            company_name = ''
         email = (woo_customer.get('email') or billing.get('email') or '').strip()
+        mobile = self._woo_meta_value(
+            woo_customer, 'mobile', 'billing_mobile', '_billing_mobile',
+        )
         vals = {
             'name': name or email or False,
             'email': email or False,
             'phone': billing.get('phone') or False,
             'company_id': self.company_id.id,
             'type': 'contact',
+            'woo_company_name': company_name or False,
         }
-        # Prefer billing address on the main contact
+        # Odoo 20 base res.partner has phone only. Set mobile when the field exists.
+        if mobile and 'mobile' in self.env['res.partner']._fields:
+            vals['mobile'] = mobile
         self._woo_apply_address_vals(vals, billing)
-        return {k: v for k, v in vals.items() if v is not False or k in ('email', 'phone')}
+        keep_empty = ('email', 'phone', 'mobile', 'woo_company_name')
+        return {k: v for k, v in vals.items() if v is not False or k in keep_empty}
+
+    def _woo_customer_external_data(self, woo_customer):
+        billing = (woo_customer or {}).get('billing') or {}
+        email = (woo_customer.get('email') or billing.get('email') or '').strip()
+        return {
+            'email': email or False,
+            'company': (billing.get('company') or '').strip() or False,
+            'date_modified': self._woo_normalize_remote_datetime(
+                woo_customer.get('date_modified_gmt') or woo_customer.get('date_modified')
+            ) or False,
+            'meta': self._woo_meta_snapshot(woo_customer),
+            'mobile': self._woo_meta_value(
+                woo_customer, 'mobile', 'billing_mobile', '_billing_mobile',
+            ) or False,
+        }
 
     def _woo_apply_address_vals(self, vals, address):
         if not address:
@@ -162,170 +215,40 @@ class KitsConnectorInstanceCustomer(models.Model):
                         vals['state_id'] = state.id
         return vals
 
-    def _woo_sync_customer_addresses(self, partner, woo_customer):
-        """Ensure invoice/delivery child contacts mirror Woo billing/shipping when distinct."""
-        self.ensure_one()
-        billing = woo_customer.get('billing') or {}
-        shipping = woo_customer.get('shipping') or {}
-        if self._woo_address_has_content(billing):
-            self._woo_upsert_address_child(partner, billing, 'invoice')
-        if self._woo_address_has_content(shipping):
-            self._woo_upsert_address_child(partner, shipping, 'delivery')
-
-    @staticmethod
-    def _woo_address_has_content(address):
-        return bool(address) and any(
-            address.get(k) for k in ('address_1', 'city', 'postcode', 'first_name', 'company')
-        )
-
-    def _woo_upsert_address_child(self, parent, address, address_type):
-        self.ensure_one()
-        children = parent.child_ids.filtered(lambda c: c.type == address_type)
-        name = ' '.join(filter(None, [
-            address.get('first_name'),
-            address.get('last_name'),
-        ])).strip() or parent.name
-        vals = {
-            'name': name,
-            'parent_id': parent.id,
-            'type': address_type,
-            'phone': address.get('phone') or False,
-            'company_id': self.company_id.id,
-        }
-        self._woo_apply_address_vals(vals, address)
-        if children:
-            children[0].write(vals)
-            return children[0]
-        return self.env['res.partner'].create(vals)
-
     # -------------------------------------------------------------------------
-    # Export
+    # Fetch (Woo → Odoo by id)
     # -------------------------------------------------------------------------
 
-    def _woo_export_customers(self, job=None):
+    def _woo_fetch_customer_by_id(self, woo_customer_id):
+        """Fetch one Woo customer into Odoo (create or update by instance binding).
+
+        Returns the partner recordset.
+        """
         self.ensure_one()
-        api = self._woo_api()
-        # Export partners with email that are either bound or flagged company contacts
-        Partner = self.env['res.partner']
-        domain = [
-            ('parent_id', '=', False),
-            ('email', '!=', False),
-            ('company_id', 'in', [False, self.company_id.id]),
-            ('active', '=', True),
-        ]
-        # Prefer already-bound partners for this store; also include recent commercial partners
-        bound_ids = self._woo_binding().search([
-            ('instance_id', '=', self.id),
-            ('odoo_model', '=', 'res.partner'),
-        ]).mapped('odoo_record_id')
-        partners = Partner.browse(bound_ids).exists()
-        # Cap unbound export candidates to avoid accidental mass create
-        extra = Partner.search(domain + [('id', 'not in', partners.ids)], limit=100)
-        partners |= extra
-
-        created = updated = skipped = failed = 0
-        errors = []
-        for partner in partners:
-            try:
-                result = self._woo_export_one_customer(partner, api)
-                if result == 'created':
-                    created += 1
-                elif result == 'updated':
-                    updated += 1
-                else:
-                    skipped += 1
-            except Exception as exc:  # noqa: BLE001
-                failed += 1
-                errors.append(f'Partner {partner.id}: {exc}')
-                _logger.exception(
-                    'WooCommerce customer export failed for partner %s', partner.id,
-                )
-                self._kits_log_operation(
-                    operation='woo_export_customers',
-                    status='failure',
-                    level='error',
-                    message=str(exc),
-                    details=f'res.partner,{partner.id}',
-                    job=job,
-                )
-
-        self.woo_last_customer_sync = fields.Datetime.now()
-        summary = (
-            f'Customer export finished: created={created}, updated={updated}, '
-            f'skipped={skipped}, failed={failed}'
-        )
-        if errors:
-            summary = f'{summary}\n' + '\n'.join(errors[:20])
-        return summary
-
-    def _woo_export_one_customer(self, partner, api):
-        self.ensure_one()
-        email = (partner.email or '').strip()
-        if not email:
+        self._ensure_woo_ready()
+        woo_customer_id = int(woo_customer_id)
+        remote = self._woo_api().get_customer(woo_customer_id)
+        if not remote or not remote.get('id'):
             raise ValueError(self.env._(
-                'Partner %(name)s has no email; WooCommerce requires an email.',
-                name=partner.display_name,
+                'WooCommerce customer %(id)s was not found on %(store)s.',
+                id=woo_customer_id,
+                store=self.name,
             ))
-        Binding = self._woo_binding()
-        binding = Binding._kits_find_binding(self, 'res.partner', odoo_record_id=partner.id)
-        first, last = self._woo_split_partner_name(partner.name)
-        payload = {
-            'email': email,
-            'first_name': first,
-            'last_name': last,
-            'billing': self._woo_partner_address_payload(partner, 'invoice'),
-            'shipping': self._woo_partner_address_payload(partner, 'delivery'),
-        }
-        if partner.phone:
-            payload['billing']['phone'] = partner.phone
-
-        if binding:
-            remote = api.update_customer(int(binding.external_id), payload)
-            result = 'updated'
-            woo_id = binding.external_id
-        else:
-            remote = api.create_customer(payload)
-            woo_id = remote.get('id')
-            if not woo_id:
-                raise ValueError(self.env._('WooCommerce did not return a customer id'))
-            result = 'created'
-
-        self._woo_bind('res.partner', partner.id, woo_id, external_data={'email': email})
-        return result
-
-    def _woo_partner_address_payload(self, partner, address_type):
-        child = partner.child_ids.filtered(lambda c: c.type == address_type)[:1]
-        source = child or partner
-        first, last = self._woo_split_partner_name(source.name or partner.name)
-        return {
-            'first_name': first,
-            'last_name': last,
-            'company': '',
-            'address_1': source.street or '',
-            'address_2': source.street2 or '',
-            'city': source.city or '',
-            'postcode': source.zip or '',
-            'country': source.country_id.code or '',
-            'state': source.state_id.code or '',
-            'email': partner.email or '',
-            'phone': source.phone or partner.phone or '',
-        }
-
-    @staticmethod
-    def _woo_split_partner_name(name):
-        parts = (name or '').strip().split(None, 1)
-        if not parts:
-            return '', ''
-        if len(parts) == 1:
-            return parts[0], ''
-        return parts[0], parts[1]
+        result = self._woo_import_one_customer(remote)
+        partner = self._woo_find_odoo('res.partner', remote['id'])
+        if not partner:
+            raise ValueError(self.env._(
+                'Customer fetch finished with status %(status)s but no partner was bound.',
+                status=result,
+            ))
+        return partner
 
     # -------------------------------------------------------------------------
     # Order-time helpers (guest-safe)
     # -------------------------------------------------------------------------
 
     def _woo_partner_from_order(self, woo_order):
-        """Resolve partner for an order. Guests are never bound as Woo customers."""
+        """Resolve partner for an order. Guests never get customer bindings."""
         self.ensure_one()
         customer_id = woo_order.get('customer_id') or 0
         try:
@@ -336,52 +259,33 @@ class KitsConnectorInstanceCustomer(models.Model):
         billing = woo_order.get('billing') or {}
 
         if customer_id > 0:
-            existing = self._woo_find_odoo('res.partner', customer_id)
-            if existing:
-                return existing
-            # Prefer pulling registered customer payload when possible
             try:
                 woo_customer = self._woo_api().get_customer(customer_id)
                 if woo_customer.get('id'):
-                    partner, _result = self._woo_match_or_create_customer(woo_customer)
-                    self._woo_sync_customer_addresses(partner, woo_customer)
-                    self._woo_bind('res.partner', partner.id, customer_id, external_data={
-                        'email': woo_customer.get('email'),
-                        'from_order': woo_order.get('id'),
-                    })
-                    return partner
+                    self._woo_import_one_customer(woo_customer)
+                    partner = self._woo_find_odoo('res.partner', woo_customer['id'])
+                    if partner:
+                        return partner
             except Exception:  # noqa: BLE001
                 _logger.info(
                     'Falling back to order billing for Woo customer %s on instance %s',
                     customer_id, self.id,
                 )
 
-        # Guest or unreachable customer: create/find by email without customer binding
+        # Guest or unreachable customer: create/find by email without binding
         email = (billing.get('email') or '').strip()
         if email:
             partner = self._woo_find_partner_by_email(email)
             if partner:
                 return partner
 
-        name = ' '.join(filter(None, [
-            billing.get('first_name'),
-            billing.get('last_name'),
-        ])).strip() or email or f"WooCommerce Guest {woo_order.get('id')}"
-        vals = {
-            'name': name,
-            'email': email or False,
-            'phone': billing.get('phone') or False,
-            'company_id': self.company_id.id,
-            'type': 'contact',
-        }
-        if billing.get('company') and billing.get('company') not in (name or ''):
-            vals['name'] = f"{name} ({billing.get('company')})"
-        self._woo_apply_address_vals(vals, billing)
-        partner = self.env['res.partner'].with_company(self.company_id).create(vals)
-        # Bind only registered customers
-        if customer_id > 0:
-            self._woo_bind('res.partner', partner.id, customer_id, external_data={
-                'email': email,
-                'from_order': woo_order.get('id'),
-            })
-        return partner
+        fallback = email or f"WooCommerce Guest {woo_order.get('id')}"
+        vals = self._woo_prepare_partner_vals({
+            'email': email,
+            'billing': billing,
+        })
+        if not vals.get('name'):
+            vals['name'] = fallback
+        return self.env['res.partner'].with_company(self.company_id).with_context(
+            kits_woo_skip_dirty=True,
+        ).create(vals)

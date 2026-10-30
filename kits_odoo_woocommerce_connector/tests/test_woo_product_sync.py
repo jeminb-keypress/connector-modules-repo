@@ -152,7 +152,7 @@ class TestWooProductSync(WooConnectorCommon):
             'is_storable': True,
             'list_price': 15.0,
             'sale_ok': True,
-            'woo_sync_to_store': True,
+            'woo_instance_ids': [(6, 0, [self.instance.id])],
             'company_id': self.company.id,
         })
         api = MagicMock()

@@ -1,12 +1,41 @@
 <?xml version="1.0" encoding="utf-8"?>
 <odoo>
-    <menuitem id="kits_woo_menu_stores"
-              name="WooCommerce Stores"
+    <!-- Parent: only present when this module is installed -->
+    <menuitem id="kits_woo_menu_root"
+              name="WooCommerce"
               parent="kits_odoo_base_connector.kits_connector_menu_root"
-              action="kits_woo_instance_action"
-              sequence="15"
+              sequence="50"
               groups="kits_odoo_base_connector.group_kits_connector_user"/>
 
+    <menuitem id="kits_woo_menu_stores"
+              name="Stores"
+              parent="kits_woo_menu_root"
+              action="kits_woo_instance_action"
+              sequence="10"
+              groups="kits_odoo_base_connector.group_kits_connector_user"/>
+
+    <menuitem id="kits_woo_menu_sync_operation"
+              name="Sync Operation"
+              parent="kits_woo_menu_root"
+              action="kits_woo_sync_wizard_action"
+              sequence="20"
+              groups="kits_odoo_base_connector.group_kits_connector_manager"/>
+
+    <menuitem id="kits_woo_menu_coupons"
+              name="Coupons"
+              parent="kits_woo_menu_root"
+              action="kits_woo_coupon_action"
+              sequence="30"
+              groups="kits_odoo_base_connector.group_kits_connector_user"/>
+
+    <menuitem id="kits_woo_menu_refunds"
+              name="Refunds"
+              parent="kits_woo_menu_root"
+              action="kits_woo_refund_action"
+              sequence="40"
+              groups="kits_odoo_base_connector.group_kits_connector_user"/>
+
+    <!-- Keep a config shortcut under Connectors → Configuration -->
     <menuitem id="kits_woo_menu_config_stores"
               name="WooCommerce Stores"
               parent="kits_odoo_base_connector.kits_connector_menu_config"

@@ -273,3 +273,14 @@ class KitsConnectorInstance(models.Model):
                 'default_company_id': self.company_id.id,
             },
         }
+
+    @api.model
+    def _cron_woo_schedule_jobs(self):
+        """No-op stub for WooCommerce auto-schedule cron.
+
+        Platform module ``kits_odoo_woocommerce_connector`` overrides this with
+        the real scheduler. The stub exists so multi-database cron workers do
+        not fail with AttributeError on databases where the Woo module is not
+        installed but a leftover Woo cron record still exists.
+        """
+        return True

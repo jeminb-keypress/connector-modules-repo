@@ -1,0 +1,83 @@
+<?xml version="1.0" encoding="utf-8"?>
+<odoo>
+    <record id="kits_woo_coupon_view_list" model="ir.ui.view">
+        <field name="name">kits.woo.coupon.list</field>
+        <field name="model">kits.woo.coupon</field>
+        <field name="arch" type="xml">
+            <list>
+                <field name="code"/>
+                <field name="name"/>
+                <field name="instance_id"/>
+                <field name="discount_type"/>
+                <field name="amount"/>
+                <field name="date_expires"/>
+                <field name="sync_to_woo"/>
+                <field name="sync_state" widget="badge"
+                         decoration-success="sync_state == 'synced'"
+                         decoration-warning="sync_state == 'not_synced'"
+                         decoration-danger="sync_state == 'error'"
+                         decoration-muted="sync_state == 'deleted'"/>
+                <field name="active"/>
+            </list>
+        </field>
+    </record>
+
+    <record id="kits_woo_coupon_view_form" model="ir.ui.view">
+        <field name="name">kits.woo.coupon.form</field>
+        <field name="model">kits.woo.coupon</field>
+        <field name="arch" type="xml">
+            <form>
+                <sheet>
+                    <div class="oe_title">
+                        <label for="code"/>
+                        <h1><field name="code" placeholder="SUMMER10"/></h1>
+                    </div>
+                    <group>
+                        <group>
+                            <field name="name"/>
+                            <field name="instance_id"/>
+                            <field name="company_id" groups="base.group_multi_company"/>
+                            <field name="discount_type"/>
+                            <field name="amount"/>
+                            <field name="date_expires"/>
+                            <field name="active"/>
+                            <field name="sync_to_woo"/>
+                        </group>
+                        <group>
+                            <field name="usage_limit"/>
+                            <field name="usage_limit_per_user"/>
+                            <field name="individual_use"/>
+                            <field name="free_shipping"/>
+                            <field name="minimum_amount"/>
+                            <field name="maximum_amount"/>
+                            <field name="woo_external_id" readonly="1"/>
+                            <field name="sync_state" readonly="1"/>
+                        </group>
+                    </group>
+                    <group string="Restrictions">
+                        <field name="product_ids" widget="many2many_tags"/>
+                        <field name="excluded_product_ids" widget="many2many_tags"/>
+                        <field name="product_category_ids" widget="many2many_tags"/>
+                        <field name="excluded_product_category_ids" widget="many2many_tags"/>
+                        <field name="email_restrictions"/>
+                        <field name="description"/>
+                    </group>
+                    <group string="Woo ID Mirror / Sync Issues">
+                        <field name="product_ids_text" readonly="1"/>
+                        <field name="excluded_product_ids_text" readonly="1"/>
+                        <field name="product_categories_text" readonly="1"/>
+                        <field name="excluded_product_categories_text" readonly="1"/>
+                        <field name="unresolved_restriction_ids" readonly="1"/>
+                        <field name="restriction_error" readonly="1"/>
+                    </group>
+                </sheet>
+            </form>
+        </field>
+    </record>
+
+    <record id="kits_woo_coupon_action" model="ir.actions.act_window">
+        <field name="name">WooCommerce Coupons</field>
+        <field name="res_model">kits.woo.coupon</field>
+        <field name="view_mode">list,form</field>
+    </record>
+</odoo>

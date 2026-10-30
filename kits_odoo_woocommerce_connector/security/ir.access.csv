@@ -1,0 +1,14 @@
+id,name,model_id,group_id/id,operation,domain
+access_kits_woo_sync_wizard_manager,kits.woo.sync.wizard manager,kits.woo.sync.wizard,kits_odoo_base_connector.group_kits_connector_manager,crud,
+access_kits_woo_instance_picker_manager,kits.woo.instance.picker manager,kits.woo.instance.picker,kits_odoo_base_connector.group_kits_connector_manager,crud,
+access_kits_woo_customer_fetch_manager,kits.woo.customer.fetch manager,kits.woo.customer.fetch,kits_odoo_base_connector.group_kits_connector_manager,crud,
+access_kits_woo_coupon_user,kits.woo.coupon user,kits.woo.coupon,kits_odoo_base_connector.group_kits_connector_user,r,"['|', ('company_id', '=', False), ('company_id', 'in', company_ids)]"
+access_kits_woo_coupon_manager,kits.woo.coupon manager,kits.woo.coupon,kits_odoo_base_connector.group_kits_connector_manager,crud,"['|', ('company_id', '=', False), ('company_id', 'in', company_ids)]"
+access_kits_woo_payment_gateway_map_user,kits.woo.payment.gateway.map user,kits.woo.payment.gateway.map,kits_odoo_base_connector.group_kits_connector_user,r,"['|', ('company_id', '=', False), ('company_id', 'in', company_ids)]"
+access_kits_woo_payment_gateway_map_manager,kits.woo.payment.gateway.map manager,kits.woo.payment.gateway.map,kits_odoo_base_connector.group_kits_connector_manager,crud,"['|', ('company_id', '=', False), ('company_id', 'in', company_ids)]"
+access_kits_woo_shipping_method_map_user,kits.woo.shipping.method.map user,kits.woo.shipping.method.map,kits_odoo_base_connector.group_kits_connector_user,r,"['|', ('company_id', '=', False), ('company_id', 'in', company_ids)]"
+access_kits_woo_shipping_method_map_manager,kits.woo.shipping.method.map manager,kits.woo.shipping.method.map,kits_odoo_base_connector.group_kits_connector_manager,crud,"['|', ('company_id', '=', False), ('company_id', 'in', company_ids)]"
+access_kits_woo_tax_map_user,kits.woo.tax.map user,kits.woo.tax.map,kits_odoo_base_connector.group_kits_connector_user,r,"['|', ('company_id', '=', False), ('company_id', 'in', company_ids)]"
+access_kits_woo_tax_map_manager,kits.woo.tax.map manager,kits.woo.tax.map,kits_odoo_base_connector.group_kits_connector_manager,crud,"['|', ('company_id', '=', False), ('company_id', 'in', company_ids)]"
+access_kits_woo_refund_user,kits.woo.refund user,kits.woo.refund,kits_odoo_base_connector.group_kits_connector_user,r,"['|', ('company_id', '=', False), ('company_id', 'in', company_ids)]"
+access_kits_woo_refund_manager,kits.woo.refund manager,kits.woo.refund,kits_odoo_base_connector.group_kits_connector_manager,crud,"['|', ('company_id', '=', False), ('company_id', 'in', company_ids)]"

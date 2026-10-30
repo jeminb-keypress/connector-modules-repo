@@ -73,8 +73,10 @@ class KitsConnectorInstance(models.Model):
     woo_match_by_sku = fields.Boolean(
         string='Match Products by SKU',
         default=True,
-        help='When no store binding exists, match unbound Odoo products by SKU '
-             'within the same company before creating a new product.',
+        help='When no store binding exists, match an unbound Odoo product by SKU '
+             'within the same company. Exactly one SKU match is linked. Several matches '
+             'are logged and skipped — the connector does not guess, and it never matches '
+             'by product name alone.',
     )
     woo_allow_unmapped_order_lines = fields.Boolean(
         string='Allow Unmapped Order Lines',
@@ -101,6 +103,13 @@ class KitsConnectorInstance(models.Model):
         string='Auto Export Inventory',
         default=False,
         help='When enabled, the scheduled cron enqueues inventory export jobs for this store.',
+    )
+    woo_auto_export_products = fields.Boolean(
+        string='Auto Export Products',
+        default=False,
+        help='When enabled, the scheduled cron exports products that list this store '
+             'under WooCommerce Stores and need sync (new / not synced / error). '
+             'Products whose remote binding is Deleted Remote are not recreated.',
     )
     woo_last_product_sync = fields.Datetime(readonly=True, copy=False)
     woo_last_order_sync = fields.Datetime(readonly=True, copy=False)
@@ -153,6 +162,29 @@ class KitsConnectorInstance(models.Model):
     def _is_woocommerce(self):
         self.ensure_one()
         return self.platform_type == 'woocommerce'
+
+    @staticmethod
+    def _woo_parse_id_list(raw):
+        """Parse comma-separated or list-like IDs into unique ints."""
+        if not raw:
+            return []
+        if isinstance(raw, str):
+            parts = [p.strip() for p in raw.replace(';', ',').split(',') if p.strip()]
+        elif isinstance(raw, (list, tuple, set)):
+            parts = list(raw)
+        else:
+            parts = [raw]
+        result = []
+        seen = set()
+        for part in parts:
+            try:
+                value = int(part)
+            except (TypeError, ValueError):
+                continue
+            if value not in seen:
+                seen.add(value)
+                result.append(value)
+        return result
 
     def _woo_api(self):
         self.ensure_one()
@@ -458,16 +490,6 @@ class KitsConnectorInstance(models.Model):
             )
         return self._woo_notify(self.env._('Customer import job(s) queued.'))
 
-    def action_woo_export_customers(self):
-        self._ensure_woo_ready()
-        for instance in self:
-            instance.action_create_sync_job(
-                'woo_export_customers',
-                name=self.env._('WooCommerce: Export Customers (%s)', instance.name),
-                payload={},
-            )
-        return self._woo_notify(self.env._('Customer export job(s) queued.'))
-
     def _ensure_woo_ready(self, require_warehouse=False):
         for instance in self:
             if not instance._is_woocommerce():
@@ -532,6 +554,84 @@ class KitsConnectorInstance(models.Model):
             str(external_id),
             external_data=external_data,
         )
+
+    @staticmethod
+    def _woo_normalize_remote_datetime(value):
+        if not value:
+            return ''
+        text = str(value).strip().replace(' ', 'T').replace('Z', '')
+        return text.split('+')[0]
+
+    def _woo_payload_is_stale(self, binding, payload):
+        """True when payload date_modified is older than the binding's last applied remote time."""
+        self.ensure_one()
+        if not binding or not payload:
+            return False
+        incoming = self._woo_normalize_remote_datetime(
+            payload.get('date_modified_gmt') or payload.get('date_modified')
+        )
+        if not incoming:
+            return False
+        previous = self._woo_normalize_remote_datetime(
+            (binding.external_data or {}).get('date_modified')
+        )
+        if not previous:
+            return False
+        return incoming < previous
+
+    def _woo_allows_recreate(self, job=None):
+        """Explicit user actions may recreate; cron and webhooks may not."""
+        if self.env.context.get('woo_allow_recreate'):
+            return True
+        payload = (job.payload if job else None) or {}
+        if payload.get('automatic'):
+            return False
+        return bool(payload.get('allow_recreate'))
+
+    @staticmethod
+    def _woo_is_not_found(exc):
+        return getattr(exc, 'status_code', None) == 404
+
+    @staticmethod
+    def _woo_meta_value(woo_record, *keys):
+        wanted = set(keys)
+        for item in (woo_record or {}).get('meta_data') or []:
+            if not isinstance(item, dict):
+                continue
+            if item.get('key') in wanted and item.get('value') not in (None, '', False):
+                return item.get('value')
+        return False
+
+    @staticmethod
+    def _woo_meta_snapshot(woo_record, limit=30):
+        items = []
+        secret_keys = {'consumer_key', 'consumer_secret', 'password', 'webhook_secret'}
+        for item in (woo_record or {}).get('meta_data') or []:
+            if not isinstance(item, dict) or not item.get('key'):
+                continue
+            key = str(item.get('key'))
+            if key.lower() in secret_keys:
+                continue
+            value = item.get('value')
+            if isinstance(value, str) and len(value) > 500:
+                value = value[:500]
+            items.append({'key': key, 'value': value})
+            if len(items) >= limit:
+                break
+        return items
+
+    def _woo_extract_cost(self, woo_record):
+        raw = (woo_record or {}).get('cost')
+        if raw in (None, '', False):
+            raw = self._woo_meta_value(
+                woo_record, '_wc_cog_cost', '_alg_wc_cog_cost', 'cost', 'standard_price',
+            )
+        if raw in (None, '', False):
+            return None
+        try:
+            return float(raw)
+        except (TypeError, ValueError):
+            return None
 
     def _woo_download_image(self, image_url, *, max_bytes=5 * 1024 * 1024):
         """Download a remote image as (base64, sha256) or (False, False) on failure."""
@@ -646,6 +746,46 @@ class KitsConnectorInstance(models.Model):
                     name=self.env._('WooCommerce: Scheduled Customer Import (%s)', instance.name),
                 )
 
+        product_instances = self.search([
+            ('platform_type', '=', 'woocommerce'),
+            ('active', '=', True),
+            ('woo_auto_export_products', '=', True),
+        ])
+        for instance in product_instances:
+            pending = self.env['kits.connector.sync.job'].search_count([
+                ('instance_id', '=', instance.id),
+                ('job_type', '=', 'woo_export_products'),
+                ('state', 'in', ('pending', 'running')),
+            ])
+            if pending:
+                continue
+            # Products that select this store and are new or dirty for this store
+            templates = self.env['product.template'].search([
+                ('woo_instance_ids', 'in', instance.id),
+                ('sale_ok', '=', True),
+                ('company_id', 'in', [False, instance.company_id.id]),
+            ])
+            if not templates:
+                continue
+            Binding = self.env['kits.connector.binding']
+            need_export_ids = []
+            for template in templates:
+                binding = Binding._kits_find_binding(
+                    instance, 'product.template', odoo_record_id=template.id,
+                )
+                if binding and binding.sync_state in ('deleted', 'deleted_local'):
+                    continue
+                if not binding or binding.sync_state in ('not_synced', 'error'):
+                    need_export_ids.append(template.id)
+            if need_export_ids:
+                instance.action_create_sync_job(
+                    'woo_export_products',
+                    name=self.env._(
+                        'WooCommerce: Scheduled Product Export (%s)', instance.name,
+                    ),
+                    payload={'template_ids': need_export_ids, 'automatic': True},
+                )
+
         stock_instances = self.search([
             ('platform_type', '=', 'woocommerce'),
             ('active', '=', True),
@@ -654,14 +794,42 @@ class KitsConnectorInstance(models.Model):
         for instance in stock_instances:
             if not instance._woo_get_warehouse():
                 continue
-            pending = self.env['kits.connector.sync.job'].search_count([
+            # Recovery: only re-export bindings that are not_synced/error.
+            # Event-driven jobs already cover fresh changes; this catches leftovers.
+            pending_targeted = self.env['kits.connector.sync.job'].search_count([
                 ('instance_id', '=', instance.id),
                 ('job_type', '=', 'woo_export_inventory'),
                 ('state', 'in', ('pending', 'running')),
             ])
-            if not pending:
+            if pending_targeted:
+                continue
+            dirty = self.env['kits.connector.binding'].search_count([
+                ('instance_id', '=', instance.id),
+                ('odoo_model', '=', 'product.product'),
+                ('active', '=', True),
+                ('sync_state', 'in', ('not_synced', 'error')),
+            ])
+            if dirty:
                 instance.action_create_sync_job(
                     'woo_export_inventory',
-                    name=self.env._('WooCommerce: Scheduled Inventory Export (%s)', instance.name),
+                    name=self.env._(
+                        'WooCommerce: Inventory Recovery (%s)', instance.name,
+                    ),
+                    payload={'recovery_only': True, 'full': True, 'automatic': True},
+                    priority=15,
                 )
         return True
+
+    def action_woo_open_sync_wizard(self):
+        self.ensure_one()
+        self._ensure_woo_ready()
+        return {
+            'type': 'ir.actions.act_window',
+            'name': self.env._('WooCommerce Sync Operation'),
+            'res_model': 'kits.woo.sync.wizard',
+            'view_mode': 'form',
+            'target': 'new',
+            'context': {
+                'default_instance_id': self.id,
+            },
+        }

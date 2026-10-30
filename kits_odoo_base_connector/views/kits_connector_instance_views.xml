@@ -40,13 +40,13 @@
                 </header>
                 <sheet>
                     <div class="oe_button_box" name="button_box">
-                        <button name="action_view_sync_jobs" type="object" class="oe_stat_button" icon="fa-tasks">
+                        <button name="action_view_sync_jobs" type="object" class="oe_stat_button" icon="checklist">
                             <field name="sync_job_count" widget="statinfo" string="Sync Jobs"/>
                         </button>
-                        <button name="action_view_logs" type="object" class="oe_stat_button" icon="fa-list-alt">
+                        <button name="action_view_logs" type="object" class="oe_stat_button" icon="article">
                             <field name="log_count" widget="statinfo" string="Logs"/>
                         </button>
-                        <button name="action_view_bindings" type="object" class="oe_stat_button" icon="fa-link">
+                        <button name="action_view_bindings" type="object" class="oe_stat_button" icon="link">
                             <field name="binding_count" widget="statinfo" string="Bindings"/>
                         </button>
                     </div>

@@ -21,6 +21,8 @@ class KitsConnectorInstanceOrder(models.Model):
         """
         self.ensure_one()
         api = self._woo_api()
+        payload = (job.payload if job else None) or {}
+        specific_ids = self._woo_parse_id_list(payload.get('woo_ids'))
         statuses = [
             s.strip() for s in (self.woo_order_statuses or 'processing,completed').split(',')
             if s.strip()
@@ -30,7 +32,10 @@ class KitsConnectorInstanceOrder(models.Model):
             'orderby': 'date',
             'order': 'asc',
         }
-        if self.woo_last_order_sync:
+        after = payload.get('after')
+        if after:
+            params['after'] = str(after).replace(' ', 'T')
+        elif self.woo_last_order_sync and not specific_ids:
             params['after'] = fields.Datetime.to_string(self.woo_last_order_sync).replace(' ', 'T')
 
         created = skipped = failed = retried = 0
@@ -38,7 +43,9 @@ class KitsConnectorInstanceOrder(models.Model):
         latest_date = self.woo_last_order_sync
 
         # 1) Retry previously failed orders by ID (independent of date watermark)
-        for failed_id in list(self._woo_order_failure_ids()):
+        #    Skipped when the job already targets an explicit ID list.
+        retry_ids = [] if specific_ids else list(self._woo_order_failure_ids())
+        for failed_id in retry_ids:
             try:
                 woo_order = api.get_order(failed_id)
                 if not woo_order.get('id'):
@@ -69,8 +76,25 @@ class KitsConnectorInstanceOrder(models.Model):
                     job=job,
                 )
 
-        # 2) Import new orders after watermark
-        for woo_order in api.get_orders(**params):
+        # 2) Import by specific IDs or after watermark / date filter
+        if specific_ids:
+            order_iter = []
+            for oid in specific_ids:
+                try:
+                    remote = api.get_order(oid)
+                    if remote.get('id'):
+                        order_iter.append(remote)
+                    else:
+                        skipped += 1
+                except Exception as exc:  # noqa: BLE001
+                    failed += 1
+                    self._woo_remember_order_failure(oid)
+                    errors.append(f"Order {oid}: {exc}")
+            order_iter = iter(order_iter)
+        else:
+            order_iter = api.get_orders(**params)
+
+        for woo_order in order_iter:
             woo_id = woo_order.get('id')
             try:
                 result, order_date = self._woo_import_one_order(woo_order, job=job)
@@ -103,10 +127,11 @@ class KitsConnectorInstanceOrder(models.Model):
                 # Continue other orders; watermark still advances — failures retried by ID
                 continue
 
-        if latest_date:
-            self.woo_last_order_sync = latest_date
-        elif not self.woo_last_order_sync:
-            self.woo_last_order_sync = fields.Datetime.now()
+        if not specific_ids:
+            if latest_date:
+                self.woo_last_order_sync = latest_date
+            elif not self.woo_last_order_sync:
+                self.woo_last_order_sync = fields.Datetime.now()
 
         summary = (
             f'Order import finished: created={created}, skipped={skipped}, '
@@ -145,23 +170,19 @@ class KitsConnectorInstanceOrder(models.Model):
             ))
 
         partner = self._woo_partner_from_order(woo_order)
-        invoice_partner = self._woo_find_or_create_address_partner(
-            woo_order.get('billing') or {},
-            parent=partner,
-            address_type='invoice',
-        ) or partner
-        shipping_partner = self._woo_find_or_create_address_partner(
-            woo_order.get('shipping') or {},
-            parent=partner,
-            address_type='delivery',
-        ) or partner
+        # Billing and shipping stay on the customer contact. Do not create
+        # invoice or delivery child contacts for the same Woo customer.
+        invoice_partner = partner
+        shipping_partner = partner
 
         # Resolve all product lines first — fail before creating SO if mapping required
         line_vals_list = []
+        line_items_src = []
         unmapped = []
         for item in woo_order.get('line_items') or []:
             try:
                 line_vals_list.append(self._woo_prepare_order_line_vals(item))
+                line_items_src.append(item)
             except UserError as exc:
                 unmapped.append(str(exc))
         if unmapped and not self.woo_allow_unmapped_order_lines:
@@ -170,6 +191,10 @@ class KitsConnectorInstanceOrder(models.Model):
                 woo_id=woo_id,
                 errors='\n'.join(unmapped),
             ))
+
+        payment_method = woo_order.get('payment_method') or False
+        payment_title = woo_order.get('payment_method_title') or False
+        payment_map = self._woo_find_payment_gateway_map(payment_method)
 
         order_vals = {
             'partner_id': partner.id,
@@ -185,7 +210,17 @@ class KitsConnectorInstanceOrder(models.Model):
             'woo_instance_id': self.id,
             'woo_order_id': str(woo_id),
             'woo_order_status': woo_order.get('status'),
+            'woo_payment_method': payment_method,
+            'woo_payment_method_title': payment_title,
+            'woo_payment_method_id': payment_map.payment_method_id.id if payment_map else False,
         }
+        # Apply first mapped shipping carrier when configured (delivery module)
+        if 'carrier_id' in self.env['sale.order']._fields:
+            for shipping in woo_order.get('shipping_lines') or []:
+                smap = self._woo_find_shipping_method_map(shipping.get('method_id'))
+                if smap and smap.carrier_id:
+                    order_vals['carrier_id'] = smap.carrier_id.id
+                    break
         currency_code = (woo_order.get('currency') or '').upper()
         if currency_code:
             currency = self.env['res.currency'].search([('name', '=', currency_code)], limit=1)
@@ -230,8 +265,17 @@ class KitsConnectorInstanceOrder(models.Model):
 
         order.write({'order_line': line_commands})
 
-        # Apply tax policy: avoid double tax when amounts already include tax context
-        self._woo_apply_order_tax_policy(order, woo_order)
+        # Map taxes via configured kits.woo.tax.map (validated before confirm)
+        line_items_meta = []
+        product_like = [
+            line for line in order.order_line
+            if line.display_type not in ('line_section', 'line_note')
+            and line.product_id
+            and line.product_id.default_code not in ('WOO_SHIPPING', 'WOO_DISCOUNT')
+        ]
+        for item, line in zip(line_items_src, product_like):
+            line_items_meta.append({'item': item, 'line': line})
+        self._woo_apply_order_taxes(order, woo_order, line_items_meta)
 
         # Bind before confirmation to prevent duplicate imports on retry
         self._woo_bind('sale.order', order.id, woo_id, external_data={
@@ -242,6 +286,9 @@ class KitsConnectorInstanceOrder(models.Model):
 
         if order.state in ('draft', 'sent'):
             order.action_confirm()
+
+        # Refunds never invent payments; credit notes only when invoices already exist
+        self._woo_sync_order_refunds(order, woo_order, job=job)
 
         self._kits_log_operation(
             operation='woo_import_orders',
@@ -263,14 +310,38 @@ class KitsConnectorInstanceOrder(models.Model):
         updates = {}
         if woo_order.get('status') and order.woo_order_status != woo_order.get('status'):
             updates['woo_order_status'] = woo_order.get('status')
+        if woo_order.get('payment_method') and order.woo_payment_method != woo_order.get('payment_method'):
+            updates['woo_payment_method'] = woo_order.get('payment_method')
+            updates['woo_payment_method_title'] = woo_order.get('payment_method_title') or False
+            payment_map = self._woo_find_payment_gateway_map(woo_order.get('payment_method'))
+            updates['woo_payment_method_id'] = (
+                payment_map.payment_method_id.id if payment_map else False
+            )
 
-        if woo_status in ('cancelled', 'refunded', 'trash'):
+        # Configurable unsupported-status logging
+        known = {
+            'pending', 'processing', 'on-hold', 'completed', 'cancelled',
+            'refunded', 'failed', 'trash',
+        }
+        if woo_status and woo_status not in known:
+            self._kits_log_operation(
+                operation='woo_import_orders',
+                status='failure',
+                level='warning',
+                message=self.env._(
+                    'Unsupported/unmapped WooCommerce order status "%(status)s" on order %(woo)s. '
+                    'No Odoo state transition was forced.',
+                    status=woo_status,
+                    woo=woo_order.get('id'),
+                ),
+            )
+
+        if woo_status in ('cancelled', 'trash', 'failed'):
             note = self.env._(
                 'WooCommerce order status is now "%(status)s". Odoo order was not overwritten.',
                 status=woo_status,
             )
             if order.state not in ('cancel', 'done'):
-                # Record conflict; cancel only when still cancellable draft/sale without deliveries
                 if order.state in ('draft', 'sent'):
                     order.action_cancel()
                     updates['woo_sync_conflict'] = note
@@ -289,24 +360,55 @@ class KitsConnectorInstanceOrder(models.Model):
 
         if updates:
             order.write(updates)
+
+        if woo_status in ('refunded', 'completed', 'processing', 'on-hold') or (
+            woo_order.get('refunds')
+        ):
+            self._woo_sync_order_refunds(order, woo_order)
+
         return 'skipped', order_date
 
-    def _woo_apply_order_tax_policy(self, order, woo_order):
-        """Keep line prices as provided; clear fiscal taxes when Woo prices are tax-inclusive
-        or when we cannot safely map tax rates — prevents double taxation.
-        """
+    def _woo_export_order_tracking(self, order):
+        """Export tracking number/URL to WooCommerce order meta + customer note."""
         self.ensure_one()
-        prices_include_tax = bool(woo_order.get('prices_include_tax'))
-        # If Woo prices include tax, disable taxes on lines so Odoo total stays closer to Woo.
-        # Full fiscal mapping is out of scope for this phase.
-        if prices_include_tax:
-            for line in order.order_line:
-                if line.tax_ids:
-                    line.tax_ids = [Command.clear()]
-            if 'tax_calculation_rounding_method' in order.company_id._fields:
-                pass
-        # Leave exclusive-tax orders with Odoo default taxes from the product;
-        # do not invent tax rates from Woo tax_lines in this phase.
+        order.ensure_one()
+        if not order.woo_order_id:
+            raise UserError(self.env._('Sales order has no WooCommerce order id.'))
+        tracking = (order.woo_tracking_number or '').strip()
+        tracking_url = (order.woo_tracking_url or '').strip()
+        if not tracking and 'carrier_tracking_ref' in order.picking_ids._fields:
+            done = order.picking_ids.filtered(
+                lambda p: p.state == 'done' and p.carrier_tracking_ref
+            )
+            if done:
+                tracking = done[0].carrier_tracking_ref
+        if not tracking:
+            raise UserError(self.env._(
+                'Set a tracking number on the sales order (or complete a delivery with '
+                'carrier tracking) before exporting.'
+            ))
+        api = self._woo_api()
+        meta = [
+            {'key': '_kits_tracking_number', 'value': tracking},
+        ]
+        if tracking_url:
+            meta.append({'key': '_kits_tracking_url', 'value': tracking_url})
+        note = self.env._('Tracking: %(tracking)s', tracking=tracking)
+        if tracking_url:
+            note = f'{note}\n{tracking_url}'
+        api.update_order(int(order.woo_order_id), {
+            'meta_data': meta,
+        })
+        api.create_order_note(int(order.woo_order_id), {
+            'note': note,
+            'customer_note': True,
+        })
+        if not order.woo_tracking_number:
+            order.woo_tracking_number = tracking
+        return self._woo_notify(self.env._(
+            'Tracking exported to WooCommerce order %(woo)s.',
+            woo=order.woo_order_id,
+        ))
 
     def _woo_prepare_order_line_vals(self, item):
         self.ensure_one()
@@ -315,6 +417,7 @@ class KitsConnectorInstanceOrder(models.Model):
         # Woo `price` is unit price (generally after line discounts, tax excl. depending on store)
         price = float(item.get('price') or 0.0)
         name = item.get('name') or (product.display_name if product else 'WooCommerce line')
+        # Clear taxes at create; mapped taxes applied in _woo_apply_order_taxes
         if not product:
             if not self.woo_allow_unmapped_order_lines:
                 raise UserError(self.env._(
@@ -330,6 +433,7 @@ class KitsConnectorInstanceOrder(models.Model):
                 'product_uom_id': fallback.uom_id.id,
                 'product_uom_qty': qty,
                 'price_unit': price,
+                'tax_ids': [Command.clear()],
             }
         return {
             'name': name,
@@ -337,6 +441,7 @@ class KitsConnectorInstanceOrder(models.Model):
             'product_uom_id': product.uom_id.id,
             'product_uom_qty': qty,
             'price_unit': price,
+            'tax_ids': [Command.clear()],
         }
 
     def _woo_match_order_product(self, item):
@@ -374,10 +479,15 @@ class KitsConnectorInstanceOrder(models.Model):
 
     def _woo_prepare_shipping_line_vals(self, shipping, total):
         self.ensure_one()
-        product = self.env.ref(
-            'kits_odoo_woocommerce_connector.product_woo_shipping',
-            raise_if_not_found=False,
-        ) or self._woo_get_or_create_shipping_product()
+        smap = self._woo_find_shipping_method_map(shipping.get('method_id'))
+        product = False
+        if smap and smap.delivery_product_id:
+            product = smap.delivery_product_id
+        if not product:
+            product = self.env.ref(
+                'kits_odoo_woocommerce_connector.product_woo_shipping',
+                raise_if_not_found=False,
+            ) or self._woo_get_or_create_shipping_product()
         return {
             'product_id': product.id,
             'name': shipping.get('method_title') or self.env._('Shipping'),
@@ -458,50 +568,6 @@ class KitsConnectorInstanceOrder(models.Model):
             'sale_ok': True,
         })
         return template.product_variant_id
-
-    def _woo_find_or_create_address_partner(self, address, parent, address_type='delivery'):
-        self.ensure_one()
-        if not any(address.get(k) for k in ('address_1', 'city', 'postcode', 'first_name')):
-            return parent
-        # Reuse existing child of same type with same street when possible
-        street = address.get('address_1') or ''
-        existing = parent.child_ids.filtered(
-            lambda c, address_type=address_type, street=street: (
-                c.type == address_type and (c.street or '') == street
-            )
-        )[:1]
-        name = ' '.join(filter(None, [
-            address.get('first_name'),
-            address.get('last_name'),
-        ])).strip() or parent.name
-        vals = {
-            'name': name,
-            'parent_id': parent.id,
-            'type': address_type,
-            'street': address.get('address_1') or False,
-            'street2': address.get('address_2') or False,
-            'city': address.get('city') or False,
-            'zip': address.get('postcode') or False,
-            'phone': address.get('phone') or False,
-            'company_id': self.company_id.id,
-        }
-        country_code = (address.get('country') or '').upper()
-        if country_code:
-            country = self.env['res.country'].search([('code', '=', country_code)], limit=1)
-            if country:
-                vals['country_id'] = country.id
-                state_code = address.get('state')
-                if state_code:
-                    state = self.env['res.country.state'].search([
-                        ('country_id', '=', country.id),
-                        ('code', '=', state_code),
-                    ], limit=1)
-                    if state:
-                        vals['state_id'] = state.id
-        if existing:
-            existing.write(vals)
-            return existing
-        return self.env['res.partner'].create(vals)
 
     @staticmethod
     def _woo_parse_datetime(value):

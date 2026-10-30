@@ -1,0 +1,16 @@
+<?xml version="1.0" encoding="utf-8"?>
+<odoo>
+    <menuitem id="kits_shopify_menu_stores"
+              name="Shopify Stores"
+              parent="kits_odoo_base_connector.kits_connector_menu_root"
+              action="kits_shopify_instance_action"
+              sequence="16"
+              groups="kits_odoo_base_connector.group_kits_connector_user"/>
+
+    <menuitem id="kits_shopify_menu_config_stores"
+              name="Shopify Stores"
+              parent="kits_odoo_base_connector.kits_connector_menu_config"
+              action="kits_shopify_instance_action"
+              sequence="25"
+              groups="kits_odoo_base_connector.group_kits_connector_manager"/>
+</odoo>

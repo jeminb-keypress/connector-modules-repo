@@ -1,0 +1,87 @@
+<?xml version="1.0" encoding="utf-8"?>
+<odoo>
+    <record id="kits_connector_instance_view_form_shopify" model="ir.ui.view">
+        <field name="name">kits.connector.instance.form.shopify</field>
+        <field name="model">kits.connector.instance</field>
+        <field name="inherit_id" ref="kits_odoo_base_connector.kits_connector_instance_view_form"/>
+        <field name="arch" type="xml">
+            <xpath expr="//field[@name='platform_type']" position="after">
+                <field name="shopify_shop_domain"
+                       placeholder="your-store.myshopify.com"
+                       invisible="platform_type != 'shopify'"
+                       required="platform_type == 'shopify'"/>
+                <field name="shopify_api_version"
+                       invisible="platform_type != 'shopify'"
+                       required="platform_type == 'shopify'"/>
+            </xpath>
+            <xpath expr="//field[@name='base_url']" position="attributes">
+                <attribute name="invisible">platform_type == 'shopify'</attribute>
+                <attribute name="readonly">platform_type == 'shopify'</attribute>
+            </xpath>
+            <xpath expr="//field[@name='api_key']" position="attributes">
+                <attribute name="invisible">platform_type == 'shopify'</attribute>
+            </xpath>
+            <xpath expr="//field[@name='api_secret']" position="attributes">
+                <attribute name="invisible">platform_type == 'shopify'</attribute>
+            </xpath>
+            <xpath expr="//group[@name='group_credentials']" position="after">
+                <group name="group_shopify_credentials"
+                       string="Shopify Credentials"
+                       invisible="platform_type != 'shopify'"
+                       groups="kits_odoo_base_connector.group_kits_connector_manager">
+                    <field name="shopify_access_token" widget="password"/>
+                </group>
+            </xpath>
+        </field>
+    </record>
+
+    <record id="kits_connector_instance_view_list_shopify" model="ir.ui.view">
+        <field name="name">kits.connector.instance.list.shopify</field>
+        <field name="model">kits.connector.instance</field>
+        <field name="inherit_id" ref="kits_odoo_base_connector.kits_connector_instance_view_list"/>
+        <field name="arch" type="xml">
+            <xpath expr="//field[@name='platform_type']" position="after">
+                <field name="shopify_shop_domain" optional="hide"/>
+                <field name="shopify_api_version" optional="hide"/>
+            </xpath>
+        </field>
+    </record>
+
+    <record id="kits_connector_instance_view_search_shopify" model="ir.ui.view">
+        <field name="name">kits.connector.instance.search.shopify</field>
+        <field name="model">kits.connector.instance</field>
+        <field name="inherit_id" ref="kits_odoo_base_connector.kits_connector_instance_view_search"/>
+        <field name="arch" type="xml">
+            <xpath expr="//field[@name='base_url']" position="after">
+                <field name="shopify_shop_domain"/>
+            </xpath>
+            <xpath expr="//filter[@name='filter_connected']" position="before">
+                <filter string="Shopify"
+                        name="filter_shopify"
+                        domain="[('platform_type', '=', 'shopify')]"/>
+                <separator/>
+            </xpath>
+        </field>
+    </record>
+
+    <record id="kits_shopify_instance_action" model="ir.actions.act_window">
+        <field name="name">Shopify Stores</field>
+        <field name="res_model">kits.connector.instance</field>
+        <field name="view_mode">list,form</field>
+        <field name="domain">[('platform_type', '=', 'shopify')]</field>
+        <field name="context">{
+            'default_platform_type': 'shopify',
+            'default_shopify_api_version': '2026-10',
+            'search_default_filter_shopify': 1,
+        }</field>
+        <field name="help" type="html">
+            <p class="o_view_nocontent_smiling_face">
+                Connect a Shopify store
+            </p>
+            <p>
+                Enter the myshopify.com domain, Admin API access token, and API version,
+                then use Test Connection.
+            </p>
+        </field>
+    </record>
+</odoo>

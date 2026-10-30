@@ -76,6 +76,8 @@ kits.connector.instance  ──uses──►  kits.connector.api.mixin  ──us
 | Sync engine | **Done** | Jobs with draft/pending/running/done/failed/cancelled; enqueue; run now; retries; cron |
 | Logging | **Done** | Levels, status, message, details, optional request/response snippets |
 | External ID mapping | **Done** | Unique constraints + `_kits_bind_record` / `_kits_find_binding` |
+| Sync status on bindings | **Done** | `sync_state` (`synced` / `not_synced` / `error` / `deleted` / `deleted_local`), `sync_error`, `sync_version` + mark helpers `_kits_mark_deleted_remote`, `_kits_mark_deleted_local`, `_kits_mark_odoo_records_deleted_local`. Dirty marking skips both deletion states so a later edit cannot queue automatic recreation. |
+| Partner connected instances | **Done** | Computed `kits_connected_instance_ids` / `kits_binding_ids` / count on `res.partner` (UI exposed by platform modules) |
 | Security | **Done** | Groups, ACL CRUD split user/manager, company rules, credential groups |
 | Simple UI | **Done** | Menus, list/form/search, stat buttons; no dashboards |
 | Platform business sync | **Out of scope** | Belong in dependent modules |
@@ -287,3 +289,173 @@ Do **not** claim DB install tests passed until they are re-run successfully.
 **Reason**
 
 - Users who already installed `20.0.1.0.0` need a clear upgrade path before reinstalling the WooCommerce connector.
+
+### 2026-10-29 — Woo cron stub for multi-DB safety
+
+**Bug**
+
+- Cron `WooCommerce: Schedule Auto Sync Jobs` failed on DBs without the Woo module loaded
+  (`AttributeError: ... no attribute '_cron_woo_schedule_jobs'`), e.g. `odoo20-connectors-woo-tests`
+  when the worker ran cron across all databases.
+
+**Modified**
+
+- `models/kits_connector_instance.py` — no-op `@api.model def _cron_woo_schedule_jobs`
+  (overridden by `kits_odoo_woocommerce_connector` when installed)
+- `__manifest__.py` — version `20.0.1.1.1`
+
+**Fix**
+
+- Upgrade base module, then restart Odoo:
+  `-u kits_odoo_base_connector`
+
+### 2026-10-29 — Binding sync status + stale-job version
+
+**What changed**
+
+- `models/kits_connector_binding.py` — fields `sync_state`, `sync_error`, `sync_version`; helpers
+  `_kits_mark_not_synced`, `_kits_mark_synced`, `_kits_mark_error`,
+  `_kits_mark_records_not_synced`, `_kits_is_stale_job`. Successful `_kits_bind_record` sets
+  `sync_state=synced` and bumps `sync_version`.
+- `views/kits_connector_binding_views.xml` — status badge, filters, form fields.
+- `__manifest__.py` — version `20.0.1.2.0`.
+
+**Why**
+
+- Platform modules need per-instance Synced / Not Synced / Error without Woo-specific columns on
+  products. Stale job detection needs a monotonic version when a newer edit happens while an older
+  job is still queued.
+
+**How it works**
+
+- Bindings remain the only Odoo ↔ external map. Platform modules mark Not Synced on mapped-field
+  writes and Synced after a successful push/pull. Jobs may pass the version captured at enqueue
+  time and skip apply when `_kits_is_stale_job` is true.
+
+**Impact**
+
+- Compatible with WooCommerce and Shopify. No Woo business logic added to base.
+- Existing bindings default to `not_synced` until the next successful bind/sync.
+
+**Testing**
+
+- Exercised indirectly by Woo `kits_woo` suite on `odoo20-connectors-woo-tests`
+  (`-u kits_odoo_base_connector,kits_odoo_woocommerce_connector --test-tags kits_woo`):
+  **0 failed, 0 error(s) of 22 tests** (2026-10-29 morning), then **23/23** after Woo export
+  sync-state regression (still uses base `_kits_bind_record` / `sync_state`).
+
+### 2026-10-29 — Live verification note (no base code change)
+
+**Observed with Woo live pass on `odoo20-connectors`**
+
+- Binding `sync_state` / `sync_version` correctly reflected Not Synced after mapped writes and
+  Synced after successful `_kits_bind_record` (Woo export update path fixed to call bind).
+- Stale-job skip via `sync_versions` exercised on inventory and product export jobs.
+- No base module code changes in this live-test pass; Woo `20.0.1.4.1` consumes existing helpers.
+
+### 2026-10-29 — Partner connected-instances fields
+
+**What changed**
+
+- `models/res_partner.py` — computed `kits_connected_instance_ids`, `kits_binding_ids`,
+  `kits_binding_count`, plus `action_kits_open_bindings`.
+- `__manifest__.py` — version `20.0.1.3.0`.
+- Partner form UI for these fields lives in platform modules (WooCommerce) so `website`'s
+  required `ir.ui.view.visibility` does not break base installs without website.
+
+**Why**
+
+- Customers need a cross-platform view of which connector instances they are linked to, with
+  per-instance external IDs and sync status stored on bindings (not duplicated on the partner).
+
+**How it works**
+
+- Bindings with `odoo_model=res.partner` drive the computed M2M/instance list. Platforms never
+  merge contacts across instances by email in base; matching rules stay in platform modules.
+
+**Testing**
+
+- Covered by Woo customer suite on `odoo20-connectors-woo-tests` (**30/30** kits_woo tests,
+  including `test_partner_connected_instances_compute`).
+- Live: partner 77 after fetch showed connected instance **9** and Synced status.
+
+### 2026-10-29 — Deleted-remote binding state + Material smart-button icons
+
+**What changed**
+
+- `models/kits_connector_binding.py` — `sync_state` value `deleted` (“Deleted Remote”);
+  `_kits_mark_deleted_remote()` soft-marks mappings when platforms report remote delete
+  (does **not** archive/delete the Odoo record). Successful `_kits_bind_record` still sets
+  `synced` so a recreated remote ID can revive the mapping.
+- `views/kits_connector_binding_views.xml` — muted badge + “Deleted Remote” search filter
+  (already present with the selection).
+- `views/kits_connector_instance_views.xml` — smart-button icons use Odoo 20 Material names
+  `checklist` / `article` / `link` (not Font Awesome `fa-*`).
+- `__manifest__.py` — version `20.0.1.5.0`.
+
+**Why**
+
+- Platform webhooks (WooCommerce customer.deleted, etc.) need a first-class unavailable state
+  without wiping contacts. Icons must render under Odoo 20’s Material Symbols / `oi` system.
+
+**Testing**
+
+- Exercised by Woo webhook suite + live soft-delete of partner **81** binding (state `deleted`,
+  contact remained). Browser confirmed instance smart-button `data-icon` / `::before` ligatures
+  for checklist/article/link on instance **9**.
+
+### 2026-10-29 — Emipro expansion support (version bump)
+
+**What changed**
+
+- `__manifest__.py` — version `20.0.1.6.0` (consumed by WooCommerce connector expansion).
+- No new base business models. Soft-delete binding state from prior entry remains the
+  platform hook for product/order/coupon remote deletes.
+
+**Notes for future agents**
+
+- Keep platform business logic (catalog, coupons, gateways, refunds, webhooks) in
+  `kits_odoo_*_connector` modules. Base stays framework-only.
+- Woo automated suite after expansion: **53/53** on `odoo20-connectors-woo-tests`.
+
+### 2026-10-29 — Woo production-fix support (version bump)
+
+**What changed**
+
+- `__manifest__.py` — version `20.0.1.7.0` (companion to Woo `20.0.1.8.0`).
+- No new base models. Soft-delete bindings remain the remote-delete hook for Woo
+  product/order/coupon/customer webhooks.
+
+**Notes for future agents**
+
+- Woo suite after tax/coupon/refund/allowlist fixes: **64/64** on
+  `odoo20-connectors-woo-tests`.
+- Odoo 20 system parameters use `get_str` / `set_str` (not `get_param` / `set_param`).
+- Woo webhook allowlist key: `kits_woo.webhook_db_allowlist` (platform module).
+
+### 2026-10-30 — Local deletion state on bindings
+
+**What changed**
+
+- `models/kits_connector_binding.py` — `sync_state` value `deleted_local` (“Deleted Local”);
+  `_kits_mark_deleted_local()` and `_kits_mark_odoo_records_deleted_local()`.
+  `_kits_mark_records_not_synced()` no longer touches `deleted` or `deleted_local` bindings.
+- `views/kits_connector_binding_views.xml` — muted badge and “Deleted Local” filter.
+- `__manifest__.py` — version `20.0.1.8.0`.
+
+**Why**
+
+- Deleting an Odoo record must leave a historical, instance-scoped mapping and must not be treated
+  as “needs export”. Remote deletion stays `deleted`. Neither state deletes the other platform’s record.
+
+**How it works**
+
+- Platform `unlink` calls `_kits_mark_odoo_records_deleted_local` before `super().unlink()`.
+  The search is company-scoped to the current user’s companies. It does not call a remote API.
+- Successful `_kits_bind_record` still sets `synced`, so an explicit re-link can revive a mapping.
+
+**Testing**
+
+- Woo suite on `odoo20-connectors-woo-tests` after upgrade:
+  **0 failed, 0 error(s) of 72 tests** (2026-10-30). Includes local product delete → `deleted_local`
+  and a later automatic import that does not recreate the product.
