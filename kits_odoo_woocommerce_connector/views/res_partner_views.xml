@@ -55,6 +55,7 @@
                                  readonly="1"/>
                     </group>
                     <group string="WooCommerce" name="woo_customer_sync">
+                        <field name="woo_is_store_customer"/>
                         <field name="woo_sync_state"/>
                         <field name="woo_binding_count"/>
                     </group>

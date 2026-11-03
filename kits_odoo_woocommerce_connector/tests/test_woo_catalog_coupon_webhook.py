@@ -172,6 +172,7 @@ class TestWooCatalogAndCoupon(WooConnectorCommon):
             'name': 'Webhook Prod',
             'list_price': 10,
             'type': 'consu',
+            'company_id': self.company.id,
         })
         self.instance._woo_bind('product.template', template.id, '7001')
         job = self.env['kits.connector.sync.job'].create({
@@ -186,6 +187,7 @@ class TestWooCatalogAndCoupon(WooConnectorCommon):
                     'name': 'Webhook Prod Renamed',
                     'type': 'simple',
                     'status': 'publish',
+                    'sku': 'WH-7001',
                     'regular_price': '12',
                     'stock_quantity': 999,
                     'manage_stock': True,
@@ -202,7 +204,8 @@ class TestWooCatalogAndCoupon(WooConnectorCommon):
             summary = self.instance._woo_process_product_webhook(job=job)
         self.assertIn('stock fields ignored', summary.lower())
         template.invalidate_recordset()
-        self.assertEqual(template.name, 'Webhook Prod Renamed')
+        self.assertEqual(template.name, 'Webhook Prod')
+        self.assertEqual(template.product_variant_id.qty_available, 0)
         # Soft delete
         job2 = self.env['kits.connector.sync.job'].create({
             'name': 'prod del',
@@ -212,10 +215,11 @@ class TestWooCatalogAndCoupon(WooConnectorCommon):
             'state': 'pending',
         })
         self.instance._woo_process_product_webhook(job=job2)
-        binding = self.env['kits.connector.binding']._kits_find_binding(
-            self.instance, 'product.template', external_id='7001',
+        binding = self.env['kits.woo.product.binding'].with_context(active_test=False)._find(
+            self.instance, external_id='7001',
         )
         self.assertEqual(binding.sync_state, 'deleted')
+        self.assertFalse(binding.active)
         self.assertTrue(template.exists())
 
     def test_order_webhook_idempotent_and_coupon_delete(self):

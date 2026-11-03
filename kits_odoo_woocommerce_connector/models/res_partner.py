@@ -2,26 +2,16 @@
 from odoo import fields, models
 from odoo.exceptions import UserError
 
-# Partner fields that affect the WooCommerce customer payload / import mapping.
-_WOO_MAPPED_PARTNER_FIELDS = frozenset({
-    'name',
-    'email',
-    'phone',
-    'mobile',
-    'street',
-    'street2',
-    'city',
-    'zip',
-    'country_id',
-    'state_id',
-    'active',
-    'child_ids',
-})
-
 
 class ResPartner(models.Model):
     _inherit = 'res.partner'
 
+    woo_is_store_customer = fields.Boolean(
+        string='WooCommerce Customer',
+        compute='_compute_woo_sync_info',
+        search='_search_woo_is_store_customer',
+        help='On while this contact has a customer binding for at least one WooCommerce store.',
+    )
     woo_company_name = fields.Char(
         string='Billing Company',
         help='WooCommerce billing company for this customer. Kept on the same contact so import does not create a second partner.',
@@ -45,41 +35,65 @@ class ResPartner(models.Model):
     )
 
     def _compute_woo_sync_info(self):
-        Binding = self.env['kits.connector.binding']
+        Binding = self.env['kits.woo.customer.binding']
         for partner in self:
             bindings = Binding.search([
-                ('odoo_model', '=', 'res.partner'),
-                ('odoo_record_id', '=', partner.id),
-                ('platform_type', '=', 'woocommerce'),
+                ('partner_id', '=', partner.id),
                 ('active', '=', True),
             ])
             partner.woo_binding_count = len(bindings)
-            if not bindings:
-                partner.woo_sync_state = 'none'
-                continue
-            states = set(bindings.mapped('sync_state'))
-            if states == {'synced'}:
-                partner.woo_sync_state = 'synced'
-            elif states == {'not_synced'}:
-                partner.woo_sync_state = 'not_synced'
-            elif states == {'error'}:
-                partner.woo_sync_state = 'error'
-            elif states <= {'deleted', 'deleted_local'}:
-                partner.woo_sync_state = 'deleted'
-            else:
-                partner.woo_sync_state = 'mixed'
+            partner.woo_is_store_customer = bool(bindings)
+            partner.woo_sync_state = 'synced' if bindings else 'none'
 
-    def write(self, vals):
-        res = super().write(vals)
-        if self.env.context.get('kits_woo_skip_dirty'):
-            return res
-        dirty_keys = _WOO_MAPPED_PARTNER_FIELDS.intersection(vals)
-        if dirty_keys:
-            self.env['kits.connector.binding']._kits_mark_records_not_synced(
-                'res.partner',
-                self.ids,
-            )
-        return res
+    def _search_woo_is_store_customer(self, operator, value):
+        if operator == 'in':
+            selected = {bool(item) for item in value}
+            if selected == {True, False}:
+                return []
+            operator, value = '=', True in selected
+        elif operator == 'not in':
+            selected = {bool(item) for item in value}
+            if selected == {True, False}:
+                return [('id', '=', 0)]
+            operator, value = '!=', True in selected
+        if operator not in ('=', '!='):
+            return NotImplemented
+        partner_ids = self.env['kits.woo.customer.binding'].search([]).partner_id.ids
+        wants_customers = (operator == '=' and bool(value)) or (operator == '!=' and not value)
+        if wants_customers:
+            return [('id', 'in', partner_ids or [0])]
+        return [('id', 'not in', partner_ids or [0])]
+
+    def _compute_kits_connector_info(self):
+        super()._compute_kits_connector_info()
+        Binding = self.env['kits.woo.customer.binding']
+        for partner in self:
+            extra = Binding.search([
+                ('partner_id', '=', partner.id),
+                ('active', '=', True),
+            ])
+            if not extra:
+                continue
+            partner.kits_connected_instance_ids |= extra.instance_id
+            partner.kits_binding_count += len(extra)
+
+    def action_kits_open_bindings(self):
+        self.ensure_one()
+        return {
+            'type': 'ir.actions.act_window',
+            'name': self.env._('Customer Bindings'),
+            'res_model': 'kits.woo.customer.binding',
+            'view_mode': 'list,form',
+            'domain': [('partner_id', '=', self.id)],
+        }
+
+    def unlink(self):
+        bindings = self.env['kits.woo.customer.binding'].sudo().search([
+            ('partner_id', 'in', self.ids),
+        ])
+        if bindings:
+            bindings.unlink()
+        return super().unlink()
 
     def _woo_get_instances_for_company(self):
         return self.env['kits.connector.instance'].search([
@@ -115,8 +129,8 @@ class ResPartner(models.Model):
         default_instance = self._woo_resolve_instance() or self.env['kits.connector.instance']
         default_woo_id = False
         if default_instance:
-            binding = self.env['kits.connector.binding']._kits_find_binding(
-                default_instance, 'res.partner', odoo_record_id=self.id,
+            binding = self.env['kits.woo.customer.binding']._find(
+                default_instance, odoo_record_id=self.id,
             )
             if binding:
                 default_woo_id = binding.external_id
@@ -161,13 +175,11 @@ class ResPartner(models.Model):
 
     def _woo_enqueue_import(self, instance):
         instance._ensure_woo_ready()
-        Binding = self.env['kits.connector.binding']
+        Binding = self.env['kits.woo.customer.binding']
         woo_ids = []
         missing = []
         for partner in self:
-            binding = Binding._kits_find_binding(
-                instance, 'res.partner', odoo_record_id=partner.id,
-            )
+            binding = Binding._find(instance, odoo_record_id=partner.id)
             if not binding:
                 missing.append(partner.display_name)
                 continue

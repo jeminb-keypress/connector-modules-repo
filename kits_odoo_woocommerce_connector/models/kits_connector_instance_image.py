@@ -67,8 +67,8 @@ class KitsConnectorInstanceImage(models.Model):
             binding.write({'external_data': meta})
         elif image_meta:
             # Persist on template binding if present
-            tmpl_binding = self._woo_binding()._kits_find_binding(
-                self, 'product.template', odoo_record_id=template.id,
+            tmpl_binding = self._woo_record_binding(
+                'product.template', odoo_record_id=template.id,
             )
             if tmpl_binding:
                 data = dict(tmpl_binding.external_data or {})
@@ -139,8 +139,8 @@ class KitsConnectorInstanceImage(models.Model):
         """Build WooCommerce images payload from Odoo main + gallery images."""
         self.ensure_one()
         images = []
-        binding = self._woo_binding()._kits_find_binding(
-            self, 'product.template', odoo_record_id=template.id,
+        binding = self._woo_record_binding(
+            'product.template', odoo_record_id=template.id,
         )
         image_meta = dict((binding.external_data or {}).get('images') or {}) if binding else {}
 
@@ -197,8 +197,8 @@ class KitsConnectorInstanceImage(models.Model):
         self.ensure_one()
         if not variant.image_variant_1920:
             return None
-        binding = self._woo_binding()._kits_find_binding(
-            self, 'product.product', odoo_record_id=variant.id,
+        binding = self._woo_record_binding(
+            'product.product', odoo_record_id=variant.id,
         )
         image_meta = dict((binding.external_data or {}).get('images') or {}) if binding else {}
         remote = next(

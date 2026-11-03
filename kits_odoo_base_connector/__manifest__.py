@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 {
     'name': 'Kits Odoo Base Connector',
-    'version': '20.0.1.8.0',
+    'version': '20.0.1.9.0',
     'category': 'Productivity',
     'summary': 'Reusable integration framework for marketplace and ERP connectors',
     'description': """
@@ -37,9 +37,8 @@ Platform-specific business logic belongs in dependent modules such as
         'views/kits_connector_sync_job_views.xml',
         'views/kits_connector_log_views.xml',
         'views/kits_connector_binding_views.xml',
-        'views/kits_connector_menus.xml',
     ],
     'installable': True,
-    'application': True,
+    'application': False,
     'auto_install': False,
 }

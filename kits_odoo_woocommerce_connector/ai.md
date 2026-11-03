@@ -8,7 +8,9 @@
 
 Odoo 20 WooCommerce connector that syncs products, customers (import-only), sales orders, coupons, and inventory for one or more WooCommerce stores. Built as a **separate** addon under `custome/20.0/kits_odoo_woocommerce_connector` (sibling of the base connector — not nested inside it).
 
-**Current version:** `20.0.1.10.0`. Depends on base `20.0.1.8.0` (`deleted_local`).
+**Current version:** `20.0.1.13.4`. Depends on base `20.0.1.9.0`.
+
+The WooCommerce app menu is owned by this module. The base module has no menu.
 
 Depends on `kits_odoo_base_connector` for instances, HTTP client, sync jobs, logs, and bindings.
 
@@ -23,6 +25,9 @@ kits_odoo_woocommerce_connector
     │
     ├─ extends kits.connector.instance   (platform=woocommerce, store settings, actions)
     ├─ extends kits.connector.sync.job   (_run_woo_* handlers)
+    ├─ kits.woo.customer.binding         (store + Woo customer id → res.partner)
+    ├─ kits.woo.product.binding          (store + Woo product id → product.template)
+    ├─ kits.woo.variant.binding          (store + Woo variation id → product.product)
     ├─ services/woo_api.py               (REST helpers, pagination, 429 retry)
     ├─ product.template / product.product / sale.order field extensions
     └─ cron: schedule auto order import + inventory export jobs
@@ -49,16 +54,34 @@ kits_odoo_woocommerce_connector
 | `woo_import_coupons` / `woo_export_coupons` | `_run_woo_*_coupons` | Coupon CRUD sync |
 | `woo_webhook_product` / `order` / `coupon` | `_run_woo_webhook_*` | Non-customer webhooks |
 
+### Menus
+
+The base module has no app menu. This module owns WooCommerce.
+
+1. Stores
+2. Sale: Orders, Customers, Customer Bindings, Refunds
+3. Product: Products, Product Bindings, Variant Bindings
+4. Sync Operations (connector administrator)
+5. Sync Jobs
+6. Logs
+7. Coupons
+8. Configuration: WooCommerce Settings (connector administrator)
+
+There is no generic Bindings menu and no delivery-order menu. Orders are `sale.order` rows with `woo_order_id`. Customers are top-level contacts with `woo_is_store_customer`. Products are templates with `woo_instance_ids`. Sync Jobs and Logs open the base models filtered to `platform_type = woocommerce`.
+
 ---
 
 ## 3. File responsibilities
 
 | Path | Responsibility |
 |------|----------------|
-| `__manifest__.py` | Depends: base connector, sale_management, sale_stock, stock, website_sale |
+| `__manifest__.py` | Version `20.0.1.13.4`. Depends: base connector, sale_management, sale_stock, stock, website_sale, delivery, payment, account |
 | `services/woo_api.py` | WooCommerce REST facade (paginated lists, CRUD, 429 backoff) |
 | `models/kits_connector_instance.py` | Woo fields, auth hooks, connection test, enqueue actions, schedule cron |
 | `models/kits_connector_instance_image.py` | Main/gallery/variant image sync via `website_sale` `product.image`; export uploads via WP XML-RPC |
+| `models/kits_woo_customer_binding.py` | Customer binding: partner, store, external customer id |
+| `models/kits_woo_product_binding.py` | Product binding and variant binding |
+| `models/kits_woo_binding_sync.py` | Shared sync state for product and variant bindings |
 | `models/kits_connector_instance_product.py` | Product import/export + attributes/variants/tags/barcode |
 | `models/kits_connector_instance_customer.py` | Dedicated customer import (no export) + guest-safe order partner helper |
 | `models/kits_connector_instance_order.py` | Order import, failure retry list, lines, shipping/discount, confirm |
@@ -70,7 +93,10 @@ kits_odoo_woocommerce_connector
 | `tests/` | Mocked API TransactionCase + HttpCase webhook coverage |
 | `data/product_data.xml` | Shipping + discount service products |
 | `data/ir_cron_data.xml` | Auto-schedule cron (15 min) |
-| `views/*` | Store form/actions, menus, SO/product bits |
+| `views/kits_woocommerce_menus.xml` | WooCommerce app menu. See Menus above. |
+| `views/*` | Store form, bindings, coupons, refunds, orders, products, customers, sync wizard |
+| `wizard/kits_woo_sync_wizard.py` | Sync Operation. Company defaults to the current company so the store list is not empty. |
+| `wizard/kits_woo_customer_fetch.py` | Fetch one customer. Same company default as Sync Operation. |
 | `static/description/icon.png` | Module icon |
 | `ai.md` | This document |
 
@@ -85,6 +111,9 @@ Required for WooCommerce platform instances:
 - **Company**, optional **warehouse**, **pricelist**, **sales team**
 - **Order statuses** CSV (default `processing,completed`)
 - **Import Product Images** (`woo_import_images`, default True)
+- **Synchronize Price** (`woo_sync_price`, default True)
+- **Synchronize Weight** (`woo_sync_weight`, default False)
+- **Create Products Automatically** (`woo_create_products`, default True)
 - **Match Products by SKU** / **Allow Unmapped Order Lines**
 - **Auto Import Orders** / **Auto Import Customers** / **Auto Export Inventory** flags
 - **Image export media upload** (optional in `config_json`): `woo_wp_username` / `woo_wp_password` for WP XML-RPC `metaWeblog.newMediaObject`
@@ -103,10 +132,13 @@ Auth: HTTPS → Basic Auth; HTTP → OAuth 1.0a one-legged (`services/woo_oauth.
 ## 5. Workflows
 
 ### Products import
-1. Paginate `GET /products` (draft/private → `active=False`). `trash` is a remote delete: mark this store’s bindings `deleted` and drop only this store from Connected Instances. Do not archive the Odoo product.
-2. Match: binding (this instance + external id) → exactly one unbound SKU (`woo_match_by_sku`) → create. Several SKUs: log and skip. Never match by name. A `deleted_local` binding whose Odoo record is gone is not recreated unless the job payload sets `allow_recreate` (explicit selected import).
-3. Categories/tags/barcode/status; variable attributes + variations
-4. Images (if `woo_import_images`): main → `image_1920`; extras → `product_template_image_ids` (`website_sale` required); variant → `image_variant_1920`; hash skip; **videos out of scope**
+1. Paginate `GET /products`. `trash` and a remote delete archive this store’s product binding and its variant bindings (`active=False`, `sync_state=deleted`, `exists_in_store=False`) and drop only this store from Connected Instances. The Odoo template and variants stay.
+2. Validate every variant before writing. Each variant needs its own SKU. A repeated SKU inside the same Woo product fails the product. A variable product with no option values fails. The product import uses a savepoint, so a failed product leaves no partial binding.
+3. Match, in order: variant binding for this store + external variation id → product binding for this store + the same external id (the template’s variant) → variant binding for this store + SKU (when `woo_match_by_sku`) → exactly one `product.product` with that SKU in this company or with no company. Several Odoo variants with that SKU fail the product. A simple product uses the Woo product id as the external variant id.
+4. When an Odoo product matches, reuse it. Create this store’s product binding if it is missing, then the variant binding. Do not rewrite the Odoo name, description, tags, SKU, barcode, or cost. Price, images, and weight are written only when `woo_sync_price`, `woo_import_images`, and `woo_sync_weight` are on. Cost is written only when the Odoo variant is created.
+5. When nothing matches, create the Odoo product only if `woo_create_products` is on. Otherwise fail that product and log the reason. Deleting the Odoo product removes its bindings and does not leave a tombstone, so a later import can create again when automatic creation is on.
+6. Store title, short and long descriptions, type, published/draft, taxable, virtual, categories, tags, image URLs, and store dates stay on `kits.woo.product.binding`. Variant title, SKU, URL, manage-stock, quantity rule, and variant images stay on `kits.woo.variant.binding`.
+7. Images (if `woo_import_images`): main → `image_1920`; extras → `product_template_image_ids` (`website_sale` required); variant → `image_variant_1920`; hash skip; **videos out of scope**
 
 ### Products export
 1. Templates that list this store on `woo_instance_ids` (drives computed `woo_sync_to_store`), or explicit `template_ids` (no silent mass fallback)
@@ -117,14 +149,16 @@ Auth: HTTPS → Basic Auth; HTTP → OAuth 1.0a one-legged (`services/woo_oauth.
 6. Multi-store: one Odoo template can have **one binding per store** (different Woo product ids)
 
 ### Customers (import only — no Odoo→Woo customer export)
-1. Import / Fetch / webhook: match by **binding** (instance + Woo customer id) → else **create** new partner and bind
-2. Never merge by email/phone across stores or onto unbound contacts (same email → separate partners). Billing company becomes a **new parent contact for that customer only** (Odoo 20 computes `is_company` from VAT, so the parent is not flagged as a company unless it has a VAT). Phone maps to `phone`. A mobile meta value is written to `mobile` when that field exists; otherwise it is stored on the binding (`external_data.mobile`). Odoo 20 base `res.partner` has no `mobile` field.
-3. Woo customer id lives only on `kits.connector.binding.external_id` — **not** a field on `res.partner`
-4. **Customer export is not supported** (UI/wizard/job removed in `20.0.1.9.5`); no partner `woo_sync_to_store` / `woo_instance_ids`
-5. Guests (`customer_id` 0) never get customer bindings — order path may reuse/create by billing email without binding
-6. Record actions: Fetch Customer, Update from WooCommerce (+ list bulk)
-7. `customer.deleted` webhook → mark binding `deleted` remote; **keep** Odoo partner
-8. `kits_connected_instance_ids` on partner is **computed** from bindings (readonly display), not a stored store picker
+1. Search `kits.woo.customer.binding` by the current store and the Woo customer id. When found, use that contact and do not change its name, email, phone, or existing addresses. Missing child addresses may still be added.
+2. Otherwise search top-level contacts in this company by case-insensitive email, across stores. Reuse the contact, create a binding for this store, and do not change its existing details. If that contact is already bound to a different Woo customer on this store, skip it.
+3. Otherwise create the contact from the Woo customer and create the binding. A customer with no first or last name is skipped and logged. A company name alone is not a person name. `woo_company_name` is set only when the contact is created.
+4. Billing and shipping are child contacts (`invoice` and `delivery`). Before creating one, exact-match an existing child on name, street, city, zip, state, and country. Phone is part of the billing match only. Reuse an exact match. Never write an existing address. An empty location is skipped.
+5. The Woo customer id lives only on `kits.woo.customer.binding.external_id`. The binding has no sync payload and no `external_data`.
+6. **Customer export is not supported** (UI/wizard/job removed in `20.0.1.9.5`).
+7. Guests (`customer_id` 0) never get customer bindings. The order path may reuse or create a contact by billing email and keeps the address on that contact.
+8. `customer.deleted` deletes this store’s customer binding, clears the store-customer indicator, and keeps the Odoo contact. A repeated event is safe.
+9. Deleting the Odoo contact deletes its customer bindings and does not call WooCommerce.
+10. `kits_connected_instance_ids` and `woo_is_store_customer` are computed from customer bindings. The Customers menu searches `woo_is_store_customer` with Odoo 20’s operator `in` and value `[True]`. `_search_woo_is_store_customer` treats that as true. Treating an unknown operator as “not a customer” inverts the list.
 
 ### Orders import
 1. Retry `woo_order_import_failures` by ID first, then paginate with `after=woo_last_order_sync`
@@ -132,28 +166,31 @@ Auth: HTTPS → Basic Auth; HTTP → OAuth 1.0a one-legged (`services/woo_oauth.
 3. Partner via `_woo_partner_from_order`; map lines (binding/SKU); fail unmapped unless allowed
 4. Shipping + discount + fee lines; tax-inclusive Woo clears Odoo line taxes
 5. Bind order **before** `action_confirm()`; never invent invoices/payments/stock moves
+6. A confirmed order’s delivery is a standard stock picking. Open it from the order’s Delivery button, or from Inventory → Operations → Deliveries. WooCommerce has no delivery menu.
 
 ### Inventory export
-1. Active `product.product` bindings for the instance whose state is not `deleted` or `deleted_local`
-2. `free_qty` with `warehouse_id` context from store warehouse, read at execution time. A job carrying an older `sync_version` is skipped so a retry cannot push a stale quantity.
-3. `PUT` product or variation stock fields. Never `POST` a new product. HTTP 404 marks the binding deleted remote (and disconnects that store for a simple/parent product) and stops recovery retries.
+1. Active `kits.woo.variant.binding` rows for this store whose state is not `deleted`. Woo stock is never imported.
+2. Quantity comes from the variant binding rule: `odoo` uses `free_qty`, `fixed` uses `qty_sync_value`, `percentage` uses `free_qty * qty_sync_value / 100`. The warehouse context is the store warehouse. A job carrying an older `sync_version` is skipped.
+3. `PUT` uses the variant external id. A variation is updated when its external id differs from the parent product id. Never `POST` a new product. HTTP 404 archives the binding and stops recovery retries.
 4. Stock-move completion enqueues each store independently. One store’s enqueue error does not stop the others.
 
 ### Monitoring / retries
-- Use base Connectors menus: Sync Jobs + Logs
-- Failed jobs: reset/enqueue/run from base job form (retry limits + backoff)
+- WooCommerce → Sync Jobs and WooCommerce → Logs. The base module has no menu.
+- Failed jobs: reset/enqueue/run from the job form (retry limits + backoff)
 
 ---
 
 ## 6. External ID mapping conventions
 
-| Odoo model | External ID | Notes |
-|------------|-------------|-------|
-| `product.template` | Woo product id | |
-| `product.product` | Woo product id (simple) or variation id | `external_data.parent_id` for variations |
-| `product.category` | Woo category id | First category on product used |
-| `sale.order` | Woo order id | Idempotency key |
-| `res.partner` | Woo customer id | When `customer_id` present |
+| Odoo model | Binding model | External ID | Notes |
+|------------|---------------|-------------|-------|
+| `product.template` | `kits.woo.product.binding` | Woo product id | Store title and descriptions stay here. One binding per store. |
+| `product.product` | `kits.woo.variant.binding` | Woo product id (simple) or variation id | Belongs to its product binding. Unique per store and external id, and per store and variant. |
+| `res.partner` | `kits.woo.customer.binding` | Woo customer id | Partner, store, and external id only. One binding per store and partner. |
+| `product.category` | `kits.connector.binding` | Woo category id | Generic binding. Also linked on the product binding. |
+| `product.tag` / attributes | `kits.connector.binding` | Woo ids | Generic binding. |
+| `sale.order` | `kits.connector.binding` | Woo order id | Idempotency key. `sale.order.woo_order_id` is a stored copy. |
+| `kits.woo.coupon` / refunds | `kits.connector.binding` | Woo ids | Generic binding. |
 
 ---
 
@@ -161,7 +198,8 @@ Auth: HTTPS → Basic Auth; HTTP → OAuth 1.0a one-legged (`services/woo_oauth.
 
 - Reuses base connector User / Administrator groups
 - Credentials: `groups='kits_odoo_base_connector.group_kits_connector_manager'` + `widget="password"`
-- No new models → no extra `ir.access.csv` rows; company isolation via base instance/job/log/binding rules + `check_company` on warehouse/pricelist/team/order store link
+- `kits.woo.customer.binding`, `kits.woo.product.binding`, and `kits.woo.variant.binding` have user read and manager create/write/unlink, with a company domain. Their menus are Customer Bindings under Sale, and Product Bindings and Variant Bindings under Product. `kits.connector.binding` has no WooCommerce menu.
+- Company isolation also uses the base instance/job/log/binding rules and `check_company` on warehouse, pricelist, team, and the order store link.
 - Never log consumer secrets / tokens
 
 ---
@@ -175,7 +213,8 @@ Auth: HTTPS → Basic Auth; HTTP → OAuth 1.0a one-legged (`services/woo_oauth.
 | Product import (simple + variable, SKU match, tags, barcode) | **Done** |
 | Product export (attrs/tags/images) | **Done** |
 | Image sync (main + multi gallery + variant; no video) | **Done** (`website_sale` required) |
-| Dedicated customer import | **Done** (binding by Woo customer id; no customer export) |
+| Dedicated customer import | **Done** (store + Woo id, then case-insensitive email reuse; no customer export) |
+| Separate customer, product, and variant bindings | **Done** (`20.0.1.13.0`) |
 | Record-level customer Fetch / Update | **Done** (Export removed in `20.0.1.9.5`) |
 | Customer Odoo→Woo export | **Removed** (`20.0.1.9.5`) |
 | Order import + auto confirm + failure retry list | **Done** |
@@ -183,9 +222,9 @@ Auth: HTTPS → Basic Auth; HTTP → OAuth 1.0a one-legged (`services/woo_oauth.
 | Manual + scheduled jobs | **Done** |
 | Record-level Push/Pull (products) | **Done** |
 | Instance Sync Operation wizard | **Done** (all / IDs / date filters) |
-| Per-instance sync status | **Done** (base binding `sync_state` + product/partner summary) |
-| Bindings / logs / retries via base | **Done** |
-| Mocked TransactionCase tests (`kits_woo`) | **Done** (72/72 on `odoo20-connectors-woo-tests`, 2026-10-30, 0 failed) |
+| Per-instance sync status | **Done** on product and variant bindings (`sync_state`). Customer bindings have no sync state. Orders, coupons, categories, tags, attributes, and refunds still use the generic binding. |
+| Bindings / logs / retries | **Done**. Logs and jobs use the base models through WooCommerce menus. Customer, product, and variant bindings have their own menus. |
+| Mocked TransactionCase tests (`kits_woo`) | **Done** (0 failed, 0 errors of 83 tests on `odoo20-connectors-woo-tests`, 2026-11-02) |
 | Live Woo E2E (products/customers/orders/images) | **Done** (see `LIVE_TEST_REPORT.md`) |
 | Realtime push on every Odoo write | **Not in scope** (marks Not Synced; export via job/action) |
 | Product gallery videos | **Not in scope** |
@@ -217,8 +256,9 @@ Auth: HTTPS → Basic Auth; HTTP → OAuth 1.0a one-legged (`services/woo_oauth.
 10. Woo cron method is overridden on instance; base module keeps a no-op stub for multi-DB cron safety.
 11. Store-level product export only includes templates with this store in `woo_instance_ids` (or explicit `template_ids`). No 200-cap fallback.
 12. Odoo is the stock source of truth. Deliveries/returns/adjustments enqueue targeted inventory export when `woo_auto_export_stock` is on. Cron recovers `not_synced`/`error` product bindings only. Order import confirms SOs and does not invent stock moves.
-13. Remote Woo product deletion does **not** delete or archive Odoo products. `product.deleted` and `trash` mark this store’s template and variant bindings `deleted`, remove only this store from `woo_instance_ids`, and leave other stores alone. Repeating the event is idempotent. Odoo product `unlink` marks bindings `deleted_local` and does not call the Woo delete API. Automatic import/export and stock export do not recreate either side. Selected export/import may recreate only when `allow_recreate` is set and the old remote id is confirmed missing.
-14. Variant rules are our own: binding → SKU → create; attribute lines drive variable products; do not auto-remove Odoo variants when Woo omits them; export does not delete orphan Woo variations when an Odoo variant is removed.
+13. Remote Woo product deletion archives this store’s product and variant bindings and does not delete or archive Odoo products. A deleted remote variant archives only that variant binding and is not recreated automatically. Odoo `unlink` of a contact, template, or variant deletes the related dedicated bindings and does not call WooCommerce. There is no `deleted_local` tombstone on these three models, so a later import follows the normal match and `woo_create_products` rules.
+14. Customers are Woo → Odoo only. Inventory is Odoo → Woo only. Product catalog sync stays bidirectional. One Odoo contact or product may have a separate binding per store. A store writes only its own binding.
+15. Generic `kits.connector.binding` remains for orders, coupons, categories, tags, attributes, and refunds. `_woo_find_odoo` and `_woo_bind` route partners, templates, and variants to the dedicated models.
 
 ---
 
@@ -234,11 +274,14 @@ Auth: HTTPS → Basic Auth; HTTP → OAuth 1.0a one-legged (`services/woo_oauth.
 - Image export requires WP application/user credentials in `config_json` (XML-RPC); Woo REST alone cannot accept `data:` URIs on modern WP.
 - `website_sale` Media gallery may auto-create an extra main-image gallery row on export round-trips (observed 3→4 once, then stable).
 - Customer/product webhooks need public base URL + Register; without that, remote deletes do nothing in Odoo until manual sync.
-- Odoo 20 base contacts have `phone` and no `mobile`. Mobile is kept on the binding unless another module adds `res.partner.mobile`.
-- Billing company is a parent contact. `is_company` is computed from VAT, so the parent is not a “company” flag by itself.
+- Odoo 20 base contacts have `phone` and no `mobile`. The customer binding does not store a mobile fallback.
+- Billing company text is `res.partner.woo_company_name` on the main contact. Billing and shipping locations are child contacts. Guest order addresses still sit on the guest contact.
+- Deleting an Odoo product removes its bindings. The next import can create a new product when Create Products Automatically is on and the SKU no longer matches.
+- An archived remote product is skipped by export and stock jobs. A later import can find the inactive binding and reactivate it for the same external id.
 - Bulk/scheduled product export does not recreate a remotely deleted product. Only an explicit selected export (`allow_recreate`) does, and only after the old id 404s.
 - Stale webhook protection compares `date_modified` / `date_modified_gmt` when both sides have one. Events without timestamps are not treated as stale.
-- This 2026-10-30 pass did not call a live WooCommerce store. Automated tests mock the API.
+- The automated suite was last run at `20.0.1.13.0`. Menu and wizard changes `20.0.1.13.1` through `20.0.1.13.4` were checked in the browser on `odoo20-connectors` and were not part of that suite.
+- Sync Operation and Fetch Customer set `company_id` to the current company in `default_get`. An empty company hides every store that belongs to a company, because `check_company` then keeps only records with no company.
 
 ### Pending
 
@@ -258,9 +301,9 @@ Auth: HTTPS → Basic Auth; HTTP → OAuth 1.0a one-legged (`services/woo_oauth.
 | XML well-formedness + manifest data paths | **Passed** |
 | Odoo `Manifest.for_addon` discovery | **Passed** |
 | Import via `odoo.addons.kits_odoo_woocommerce_connector` | **Passed** |
-| Live DB install / upgrade | **Passed** on `odoo20-connectors` (module through `20.0.1.4.1`) |
-| Live Woo API + browser sync | **Passed** 2026-10-29 (see changelog live browser pass); product/stock/wizard/UI |
-| Automated `kits_woo` | **0 failed, 0 error(s) of 72 tests** on `odoo20-connectors-woo-tests` (2026-10-30). Live `odoo20-connectors` was not upgraded in that run. |
+| Live DB install / upgrade | **Passed** on `odoo20-connectors` through `20.0.1.13.4` |
+| Live Woo API + browser sync | **Passed** 2026-10-29 for product/stock/wizard/UI. Menus, the customer list, the store dropdown, and Refunds under Sale were checked in the browser on 2026-11-02. |
+| Automated `kits_woo` | **0 failed, 0 error(s) of 83 tests** on `odoo20-connectors-woo-tests` (2026-11-02, module `20.0.1.13.0`). Versions `20.0.1.13.1` through `20.0.1.13.4` were not re-run in that suite. |
 
 ---
 
@@ -987,3 +1030,106 @@ message after restart.
 
 - Base: `models/kits_connector_binding.py`, `views/kits_connector_binding_views.xml`, `__manifest__.py`, `ai.md`
 - Woo: `models/kits_connector_instance.py`, `kits_connector_instance_product.py`, `kits_connector_instance_inventory.py`, `kits_connector_instance_customer.py`, `kits_connector_instance_webhook.py`, `kits_connector_instance_refund.py`, `stock_move.py`, `product_template.py`, `product_product.py`, `res_partner.py`, `wizard/kits_woo_sync_wizard.py`, `tests/test_woo_deletion_rules.py`, `tests/test_woo_record_sync.py`, `tests/__init__.py`, `__manifest__.py`, `ai.md`
+
+### 2026-11-02 — Independent WooCommerce menu
+
+**Version:** `20.0.1.12.0`.
+
+**Hierarchy** (`views/kits_woocommerce_menus.xml`)
+
+- WooCommerce
+  - Stores
+  - Sync Operations
+  - Coupons
+  - Refunds
+  - Sync Jobs
+  - Logs
+  - Bindings
+  - Configuration
+    - WooCommerce Settings
+
+**Shared versus platform UI**
+
+- Jobs, logs, and bindings remain base models and base list/form/search views.
+- This module adds `kits_woo_sync_job_action`, `kits_woo_log_action`, and `kits_woo_binding_action` with domain `platform_type = woocommerce`.
+- Stores and WooCommerce Settings reuse `kits_woo_instance_action`.
+- Groups are unchanged: connector user for the app and record menus, connector administrator for Sync Operations and Configuration.
+- Installing this module does not restore the generic Connectors menu. Its upgrade calls `kits_remove_connector_app_menus` after the WooCommerce items have left that parent.
+
+**Files**
+
+- `__manifest__.py`
+- `views/kits_woocommerce_menus.xml`
+- `migrations/20.0.1.12.0/end-migrate.py`
+- `ai.md`
+
+### 2026-11-02 — Separate customer, product, and variant bindings
+
+**Version:** `20.0.1.13.0`. Base module code was not changed.
+
+**Models**
+
+- `kits.woo.customer.binding`: `partner_id`, `instance_id`, `external_id`, `company_id`, `active`. Unique per store and external id, and per store and partner.
+- `kits.woo.product.binding`: template, store, external product id, store title, short and long descriptions, product type, published, taxable, virtual, categories, tags, image URLs, variant counts, store dates, plus the shared sync fields.
+- `kits.woo.variant.binding`: variant, parent product binding, store, external variant id, SKU, store title, URL, exists in store, manage stock, quantity rule (`odoo`, `fixed`, `percentage`), variant images, store dates, and the shared sync fields.
+- `kits.woo.binding.sync` holds `sync_state`, `sync_error`, `sync_version`, `sync_date`, `active`, `exists_in_store`, and `external_data` for product and variant bindings only.
+
+**Matching**
+
+- Customers: store + external id, then case-insensitive email on top-level contacts, then create. No name skips the customer. Existing contact details and addresses are not overwritten. Billing and shipping are exact-matched child contacts.
+- Products: store + external variation id, then store + SKU binding, then one Odoo variant by SKU. Create only when `woo_create_products` is on. Missing, duplicate, and option-less variable products fail before writes.
+
+**Deletion**
+
+- Woo customer deleted: unlink that store’s customer binding and keep the contact.
+- Woo product deleted: archive the product binding and its variant bindings.
+- Woo variant deleted: archive that variant binding and do not recreate it.
+- Odoo contact, template, or variant deleted: delete the related dedicated bindings and do not call WooCommerce.
+
+**Migration**
+
+- `migrations/20.0.1.13.0/post-migrate.py` copies legacy generic bindings for `res.partner`, `product.template`, and `product.product` into the new models, then removes those generic rows. Orders, coupons, categories, tags, attributes, and refunds stay on `kits.connector.binding`.
+
+**Tests (executed)**
+
+- Database `odoo20-connectors-woo-tests`, `--test-tags=/kits_odoo_woocommerce_connector`, no live WooCommerce calls:
+  **0 failed, 0 error(s) of 83 tests** (2026-11-02).
+- The module stats line in the same run counted 109 tests. The result line is 83 tests, 0 failed, 0 errors.
+- Live database `odoo20-connectors` was not upgraded.
+
+**Files**
+
+- New: `models/kits_woo_binding_sync.py`, `models/kits_woo_customer_binding.py`, `models/kits_woo_product_binding.py`, `views/kits_woo_binding_views.xml`, `migrations/20.0.1.13.0/post-migrate.py`, `tests/test_woo_separate_bindings.py`
+- Modified: `__manifest__.py`, `models/__init__.py`, `security/ir.access.csv`, `views/kits_woocommerce_menus.xml`, `views/kits_connector_instance_views.xml`, `views/res_partner_views.xml`, instance customer/product/inventory/webhook/image/order/coupon models, `res_partner.py`, `product_template.py`, `product_product.py`, and the customer, product, deletion, record-sync, and catalog webhook tests.
+
+### 2026-11-02 — Remove the generic Bindings menu
+
+**Version:** `20.0.1.13.1`.
+
+The WooCommerce **Bindings** menu and `kits_woo_binding_action` are removed. That screen listed `kits.connector.binding`, which no longer holds customers, products, or variants. Customer Bindings, Product Bindings, and Variant Bindings stay. Orders, categories, tags, attributes, coupons, and refunds still use the shared binding model; they are reached from their own records and menus.
+
+### 2026-11-02 — Group Sale and Product menus
+
+**Version:** `20.0.1.13.2`.
+
+WooCommerce top menu order: Stores, Sale, Product, Sync Operations, Sync Jobs, Logs, then Coupons, Refunds, and Configuration.
+
+Sale contains Orders, Customers, and Customer Bindings. Product contains Products, Product Bindings, and Variant Bindings. Orders are sale orders with a WooCommerce order id. Customers are top-level contacts that have a customer binding. Products are templates linked to a WooCommerce store.
+
+### 2026-11-02 — Sync Operation store dropdown
+
+**Version:** `20.0.1.13.3`.
+
+The Sync Operation and Fetch Customer forms set their company to the current company before the store dropdown is opened. A store that belongs to that company is listed. The company is no longer derived only from a store that has not been selected yet.
+
+### 2026-11-02 — Refunds under Sale
+
+**Version:** `20.0.1.13.4`.
+
+The Refunds menu is a child of Sale, after Customer Bindings. It is no longer a top-level WooCommerce item.
+
+### 2026-11-02 — Handover document reconciled with 20.0.1.13.4
+
+Docs only. No code change and no version bump.
+
+The living sections now match the code: current menu tree, no generic Bindings menu, customer search operator `in` / `[True]`, product match through an existing product binding, Sync Operation and Fetch Customer company default, and deliveries as stock pickings with no WooCommerce menu. The validation table records the live upgrade through `20.0.1.13.4` and keeps the automated result at `20.0.1.13.0`.

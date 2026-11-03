@@ -1,4 +1,7 @@
 # -*- coding: utf-8 -*-
+from . import kits_woo_binding_sync
+from . import kits_woo_customer_binding
+from . import kits_woo_product_binding
 from . import kits_woo_coupon
 from . import kits_woo_payment_gateway_map
 from . import kits_woo_shipping_method_map

@@ -10,6 +10,8 @@ Reusable Odoo 20 integration foundation for marketplace/ERP connectors. Inspired
 
 This module provides **shared infrastructure only**. It does **not** implement WooCommerce/Shopify/Magento/Amazon/QuickBooks business sync or platform APIs.
 
+**Current version:** `20.0.1.9.0`. No app menu. Platform modules own their menus.
+
 ### Planned dependent modules
 
 | Module | Role |
@@ -32,7 +34,7 @@ kits.connector.instance  ──uses──►  kits.connector.api.mixin  ──us
     │                                      (auth / validate hooks)
     ├── kits.connector.sync.job   (queue + cron + retries)
     ├── kits.connector.log        (operation audit trail)
-    └── kits.connector.binding    (external ↔ Odoo ID map)
+    └── kits.connector.binding    (external ↔ Odoo ID map for records that have no platform binding)
 ```
 
 ### Design principles
@@ -61,7 +63,7 @@ kits.connector.instance  ──uses──►  kits.connector.api.mixin  ──us
 | `security/kits_connector_security.xml` | Privilege + User/Administrator groups (Odoo 20 style) |
 | `security/ir.access.csv` | ACLs + multi-company domains (Odoo 20 unified access) |
 | `data/ir_cron_data.xml` | Cron: process pending jobs every 5 minutes |
-| `views/*` | List/form/search views and Connectors app menu |
+| `views/*` | Shared list/form/search views and window actions. No app menu. |
 | `static/description/icon.png` | App icon |
 | `ai.md` | This handover document |
 
@@ -77,9 +79,9 @@ kits.connector.instance  ──uses──►  kits.connector.api.mixin  ──us
 | Logging | **Done** | Levels, status, message, details, optional request/response snippets |
 | External ID mapping | **Done** | Unique constraints + `_kits_bind_record` / `_kits_find_binding` |
 | Sync status on bindings | **Done** | `sync_state` (`synced` / `not_synced` / `error` / `deleted` / `deleted_local`), `sync_error`, `sync_version` + mark helpers `_kits_mark_deleted_remote`, `_kits_mark_deleted_local`, `_kits_mark_odoo_records_deleted_local`. Dirty marking skips both deletion states so a later edit cannot queue automatic recreation. |
-| Partner connected instances | **Done** | Computed `kits_connected_instance_ids` / `kits_binding_ids` / count on `res.partner` (UI exposed by platform modules) |
+| Partner connected instances | **Done** | Computed `kits_connected_instance_ids` / `kits_binding_ids` / count on `res.partner` from `kits.connector.binding`. WooCommerce customers use `kits.woo.customer.binding` and extend this compute. |
 | Security | **Done** | Groups, ACL CRUD split user/manager, company rules, credential groups |
-| Simple UI | **Done** | Menus, list/form/search, stat buttons; no dashboards |
+| Shared views | **Done** | List, form, and search views, plus window actions. No app menu since `20.0.1.9.0`. |
 | Platform business sync | **Out of scope** | Belong in dependent modules |
 | Webhooks | **Not implemented** | Intentionally deferred to platform modules |
 | OAuth flows | **Not implemented** | Platforms override auth hooks as needed |
@@ -134,11 +136,15 @@ instance.action_create_sync_job('import_orders', payload={...})
 
 ### Bind external records
 
+Use `kits.connector.binding` when the platform has no model of its own:
+
 ```python
 env['kits.connector.binding']._kits_bind_record(
-    instance, 'product.product', product.id, external_id='123'
+    instance, 'sale.order', order.id, external_id='123'
 )
 ```
+
+WooCommerce does not use this model for customers, product templates, or variants. Those use `kits.woo.customer.binding`, `kits.woo.product.binding`, and `kits.woo.variant.binding`.
 
 ---
 
@@ -164,7 +170,7 @@ env['kits.connector.binding']._kits_bind_record(
 
 ## 7. Odoo 20 compatibility notes
 
-- Versioned as `20.0.1.0.0`
+- Current version is `20.0.1.9.0`. The first release was `20.0.1.0.0`.
 - Validated against local Odoo `20.0` tree under `odoo/odoo20`
 - Config warnings observed (environment pre-existing, not introduced by this module): unknown options `longpolling_port`, `xmlrpc_interface`, `netrpc_interface` in `odoo20.conf`
 - Privilege UX lives under **Settings → Users → Productivity → Kits Connectors**
@@ -175,7 +181,7 @@ env['kits.connector.binding']._kits_bind_record(
 
 ### Known limitations
 
-- Full module **installation was not executed**: PostgreSQL cluster `18/main` is **down** and cannot be started in this environment (`sudo` blocked; connection refused on `localhost:5432`).
+- The first install attempt on 2026-10-27 did not run because PostgreSQL was down. Later upgrades of this module have run on `odoo20-connectors`.
 - Generic `_kits_test_connection` does not perform a network call (by design).
 - No webhook receiver / controller in base.
 - No automated Odoo `TransactionCase` tests yet.
@@ -183,7 +189,7 @@ env['kits.connector.binding']._kits_bind_record(
 
 ### Pending tasks (suggested)
 
-- [ ] Install/upgrade on a live PostgreSQL-backed DB and smoke-test menus/ACL.
+- [x] Install/upgrade on a live PostgreSQL-backed DB (done on `odoo20-connectors`; this module no longer has menus to smoke-test).
 - [ ] Add `tests/` for binding uniqueness, job retry transitions, HTTP error mapping.
 - [ ] Optionally add log GC cron for old logs.
 - [x] Build first platform module (`kits_odoo_woocommerce_connector`) on top of this base. (done 2026-10-27 as sibling under `custome/20.0/`)
@@ -199,9 +205,10 @@ env['kits.connector.binding']._kits_bind_record(
 | Manifest parse + data file existence | **Passed** |
 | Odoo module discovery (`get_module_path` / addons path) | **Passed** — path resolved under `custome/20.0` |
 | HTTP client unit checks (URL build, truncate, status mapping) | **Passed** |
-| `odoo-bin -i kits_odoo_base_connector --stop-after-init` | **Not completed** — `psycopg2.OperationalError: Connection refused` (PostgreSQL down) |
+| `odoo-bin -i kits_odoo_base_connector --stop-after-init` on 2026-10-27 | **Not completed** — PostgreSQL was down |
+| Later upgrades | **Passed** on `odoo20-connectors` through `20.0.1.9.0` |
 
-Do **not** claim DB install tests passed until they are re-run successfully.
+The 2026-10-27 install did not run. Later upgrades of this module did.
 
 ---
 
@@ -459,3 +466,40 @@ Do **not** claim DB install tests passed until they are re-run successfully.
 - Woo suite on `odoo20-connectors-woo-tests` after upgrade:
   **0 failed, 0 error(s) of 72 tests** (2026-10-30). Includes local product delete → `deleted_local`
   and a later automatic import that does not recreate the product.
+
+### 2026-11-02 — No connector menus in the base module
+
+**Version:** `20.0.1.9.0`.
+
+The base module is a backend framework. It does not register an app menu.
+
+**Menu ownership**
+
+- Shared models, views, and unfiltered window actions stay here: instances, sync jobs, logs, bindings.
+- `application` is `False`.
+- `views/kits_connector_menus.xml` is removed. Upgrade `20.0.1.9.0` deletes those menu records once they have no children (`hooks.kits_remove_connector_app_menus`).
+- Platform modules own their root menus and open the shared views through their own actions, filtered by `platform_type`.
+
+**Files**
+
+- `__manifest__.py`
+- `hooks.py`
+- `migrations/20.0.1.9.0/end-migrate.py`
+- deleted `views/kits_connector_menus.xml`
+- `ai.md`
+
+### 2026-11-02 — WooCommerce dedicated bindings (no base code change)
+
+**Version:** base stays `20.0.1.9.0`. WooCommerce connector `20.0.1.13.0`.
+
+`kits.connector.binding` remains the shared map for orders, coupons, categories, tags, attributes, refunds, and other records that do not have their own model.
+
+WooCommerce customers, product templates, and product variants no longer use this generic model. They use `kits.woo.customer.binding`, `kits.woo.product.binding`, and `kits.woo.variant.binding` in `kits_odoo_woocommerce_connector`. The WooCommerce upgrade copies the old generic rows for those three models and then removes them. One Odoo contact or product may still have one mapping per store.
+
+No base Python, view, security, or migration file was changed for this split.
+
+### 2026-11-02 — Handover document reconciled with 20.0.1.9.0
+
+Docs only. No code change and no version bump.
+
+The living sections now say this module has no app menu, that WooCommerce customers, templates, and variants use their own binding models, and that the 2026-10-27 PostgreSQL outage is historical. Later upgrades on `odoo20-connectors` are recorded in the validation table.

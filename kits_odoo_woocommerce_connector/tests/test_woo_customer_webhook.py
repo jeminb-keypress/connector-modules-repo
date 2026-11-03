@@ -93,18 +93,16 @@ class TestWooCustomerWebhook(WooConnectorCommon):
         })
         summary = self.instance._woo_process_customer_webhook(job=job)
         self.assertIn('customer.created', summary)
-        binding = self.env['kits.connector.binding']._kits_find_binding(
-            self.instance, 'res.partner', external_id='501',
+        binding = self.env['kits.woo.customer.binding']._find(
+            self.instance, external_id='501',
         )
         self.assertTrue(binding)
-        self.assertEqual(binding.sync_state, 'synced')
-        partner = binding._kits_get_odoo_record()
-        self.assertNotEqual(partner.id, existing.id)
+        partner = binding.partner_id
+        self.assertEqual(partner, existing)
         self.assertEqual(partner.email, 'hook@example.com')
-        self.assertEqual(partner.name, 'Hook Created')
-        other_bind = self.env['kits.connector.binding'].search([
+        self.assertEqual(partner.name, 'Unrelated')
+        other_bind = self.env['kits.woo.customer.binding'].search([
             ('instance_id', '=', other.id),
-            ('odoo_model', '=', 'res.partner'),
             ('external_id', '=', '501'),
         ])
         self.assertFalse(other_bind)
@@ -137,7 +135,7 @@ class TestWooCustomerWebhook(WooConnectorCommon):
         })
         self.instance._woo_process_customer_webhook(job=job)
         partner.invalidate_recordset()
-        self.assertEqual(partner.name, 'After Update')
+        self.assertEqual(partner.name, 'Before Update')
 
     def test_deleted_webhook_marks_binding_not_partner(self):
         partner = self.env['res.partner'].create({
@@ -159,11 +157,11 @@ class TestWooCustomerWebhook(WooConnectorCommon):
             'state': 'pending',
         })
         summary = self.instance._woo_process_customer_webhook(job=job)
-        self.assertIn('deleted remote', summary.lower())
-        binding.invalidate_recordset()
-        self.assertEqual(binding.sync_state, 'deleted')
+        self.assertIn('kept', summary.lower())
+        self.assertFalse(binding.exists())
         self.assertTrue(partner.exists())
         self.assertEqual(partner.name, 'Keep Me')
+        self.assertFalse(partner.woo_is_store_customer)
 
     def test_enqueue_idempotent_on_delivery_id(self):
         body = {'id': 600, 'email': 'idemp@example.com', 'first_name': 'A', 'last_name': 'B'}
@@ -225,8 +223,8 @@ class TestWooCustomerWebhook(WooConnectorCommon):
         })
         job.action_run_now()
         self.assertEqual(job.state, 'done')
-        binding.invalidate_recordset()
-        self.assertEqual(binding.sync_state, 'deleted')
+        self.assertFalse(binding.exists())
+        self.assertTrue(partner.exists())
         self.assertTrue(partner.exists())
 
     def test_register_webhooks_calls_api(self):

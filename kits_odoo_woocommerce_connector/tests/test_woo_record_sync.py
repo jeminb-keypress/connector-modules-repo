@@ -44,14 +44,13 @@ class TestWooRecordSyncAndStatus(WooConnectorCommon):
         })
         self.instance._woo_bind('product.template', tmpl_a.id, '11')
         other._woo_bind('product.template', tmpl_b.id, '11')
-        Binding = self.env['kits.connector.binding']
         self.assertEqual(
-            Binding._kits_find_binding(self.instance, 'product.template', external_id='11').odoo_record_id,
-            tmpl_a.id,
+            self.env['kits.woo.product.binding']._find(self.instance, external_id='11').product_tmpl_id,
+            tmpl_a,
         )
         self.assertEqual(
-            Binding._kits_find_binding(other, 'product.template', external_id='11').odoo_record_id,
-            tmpl_b.id,
+            self.env['kits.woo.product.binding']._find(other, external_id='11').product_tmpl_id,
+            tmpl_b,
         )
 
     def test_mapped_field_marks_not_synced_per_instance(self):
@@ -179,10 +178,12 @@ class TestWooRecordSyncAndStatus(WooConnectorCommon):
         with self._patch_api(api):
             summary = self.instance._woo_import_products(job=job)
         self.assertIn('updated=1', summary)
-        self.assertEqual(template.name, 'New Name')
-        binding = self.env['kits.connector.binding']._kits_find_binding(
-            self.instance, 'product.template', external_id='777',
+        self.assertEqual(template.name, 'Old Name')
+        self.assertEqual(template.list_price, 15)
+        binding = self.env['kits.woo.product.binding']._find(
+            self.instance, external_id='777',
         )
+        self.assertEqual(binding.title, 'New Name')
         self.assertEqual(binding.sync_state, 'synced')
 
     def test_missing_remote_product_marks_error(self):
@@ -203,7 +204,8 @@ class TestWooRecordSyncAndStatus(WooConnectorCommon):
         })
         with self._patch_api(api):
             self.instance._woo_import_products(job=job)
-        self.assertEqual(binding.sync_state, 'error')
+        self.assertEqual(binding.with_context(active_test=False).sync_state, 'deleted')
+        self.assertFalse(binding.with_context(active_test=False).active)
 
     def test_stale_export_job_skipped(self):
         template = self.env['product.template'].create({

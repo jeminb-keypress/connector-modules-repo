@@ -37,14 +37,12 @@ class TestWooProductSync(WooConnectorCommon):
         self.assertIn('created=1', summary1)
         self.assertIn('updated=1', summary2)
 
-        Binding = self.env['kits.connector.binding']
-        tmpl_bindings = Binding.search([
+        tmpl_bindings = self.env['kits.woo.product.binding'].search([
             ('instance_id', '=', self.instance.id),
-            ('odoo_model', '=', 'product.template'),
             ('external_id', '=', '101'),
         ])
         self.assertEqual(len(tmpl_bindings), 1)
-        template = tmpl_bindings._kits_get_odoo_record()
+        template = tmpl_bindings.product_tmpl_id
         self.assertEqual(template.name, 'Simple Tee')
         self.assertEqual(template.default_code, 'TEE-101')
         # Second import must not create a second template with same SKU
@@ -80,14 +78,14 @@ class TestWooProductSync(WooConnectorCommon):
         with self._patch_api(api):
             self.instance._woo_import_products()
 
-        binding = self.env['kits.connector.binding'].search([
+        binding = self.env['kits.woo.product.binding'].search([
             ('instance_id', '=', self.instance.id),
-            ('odoo_model', '=', 'product.template'),
             ('external_id', '=', '202'),
         ], limit=1)
         self.assertTrue(binding)
-        self.assertEqual(binding.odoo_record_id, existing.id)
-        self.assertEqual(existing.name, 'Remote SKU Product')
+        self.assertEqual(binding.product_tmpl_id, existing)
+        self.assertEqual(existing.name, 'Local SKU Product')
+        self.assertEqual(binding.title, 'Remote SKU Product')
 
     def test_variable_product_import_no_duplicate_variants(self):
         woo_product = {
@@ -133,13 +131,12 @@ class TestWooProductSync(WooConnectorCommon):
             api.get_variations.return_value = iter(variations)
             self.instance._woo_import_products()
 
-        template = self.env['kits.connector.binding']._kits_find_binding(
-            self.instance, 'product.template', external_id='303',
-        )._kits_get_odoo_record()
+        template = self.env['kits.woo.product.binding']._find(
+            self.instance, external_id='303',
+        ).product_tmpl_id
         self.assertEqual(len(template.product_variant_ids), 2)
-        var_bindings = self.env['kits.connector.binding'].search([
+        var_bindings = self.env['kits.woo.variant.binding'].search([
             ('instance_id', '=', self.instance.id),
-            ('odoo_model', '=', 'product.product'),
             ('external_id', 'in', ['304', '305']),
         ])
         self.assertEqual(len(var_bindings), 2)
@@ -165,9 +162,8 @@ class TestWooProductSync(WooConnectorCommon):
 
         self.assertEqual(api.create_product.call_count, 1)
         self.assertEqual(api.update_product.call_count, 1)
-        binding = self.env['kits.connector.binding'].search([
+        binding = self.env['kits.woo.product.binding'].search([
             ('instance_id', '=', self.instance.id),
-            ('odoo_model', '=', 'product.template'),
-            ('odoo_record_id', '=', template.id),
+            ('product_tmpl_id', '=', template.id),
         ], limit=1)
         self.assertEqual(binding.external_id, '900')

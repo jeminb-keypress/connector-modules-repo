@@ -468,8 +468,8 @@ class KitsConnectorInstanceOrder(models.Model):
             ], limit=1)
             if product:
                 # Prefer unbound or already bound to this store — avoid cross-store silent merge
-                binding = self._woo_binding()._kits_find_binding(
-                    self, 'product.product', odoo_record_id=product.id,
+                binding = self._woo_record_binding(
+                    'product.product', odoo_record_id=product.id,
                 )
                 if not binding or str(binding.external_id) in {
                     str(variation_id or ''), str(product_id or ''),

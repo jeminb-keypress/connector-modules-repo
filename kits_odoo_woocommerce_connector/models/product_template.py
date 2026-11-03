@@ -78,12 +78,10 @@ class ProductTemplate(models.Model):
     )
 
     def _compute_woo_sync_info(self):
-        Binding = self.env['kits.connector.binding']
+        Binding = self.env['kits.woo.product.binding']
         for template in self:
             bindings = Binding.search([
-                ('odoo_model', '=', 'product.template'),
-                ('odoo_record_id', '=', template.id),
-                ('platform_type', '=', 'woocommerce'),
+                ('product_tmpl_id', '=', template.id),
                 ('active', '=', True),
             ])
             template.woo_binding_count = len(bindings)
@@ -125,20 +123,33 @@ class ProductTemplate(models.Model):
             return res
         dirty_keys = _WOO_MAPPED_TEMPLATE_FIELDS.intersection(vals)
         if dirty_keys or 'woo_instance_ids' in vals:
-            self.env['kits.connector.binding']._kits_mark_records_not_synced(
-                'product.template',
-                self.ids,
-            )
+            bindings = self.env['kits.woo.product.binding'].search([
+                ('product_tmpl_id', 'in', self.ids),
+                ('active', '=', True),
+                ('sync_state', '!=', 'deleted'),
+            ])
+            if bindings:
+                bindings._kits_mark_not_synced()
+            variants = self.env['kits.woo.variant.binding'].search([
+                ('product_id', 'in', self.with_context(active_test=False).mapped('product_variant_ids').ids),
+                ('active', '=', True),
+                ('sync_state', '!=', 'deleted'),
+            ])
+            if variants:
+                variants._kits_mark_not_synced()
         return res
 
     def unlink(self):
-        variants = self.with_context(active_test=False).mapped('product_variant_ids')
-        Binding = self.env['kits.connector.binding']
-        message = self.env._(
-            'Odoo product was deleted. The WooCommerce product was left unchanged.'
-        )
-        Binding._kits_mark_odoo_records_deleted_local('product.product', variants.ids, message)
-        Binding._kits_mark_odoo_records_deleted_local('product.template', self.ids, message)
+        product_bindings = self.env['kits.woo.product.binding'].sudo().with_context(
+            active_test=False,
+        ).search([('product_tmpl_id', 'in', self.ids)])
+        variant_bindings = self.env['kits.woo.variant.binding'].sudo().with_context(
+            active_test=False,
+        ).search([('product_binding_id', 'in', product_bindings.ids)])
+        if variant_bindings:
+            variant_bindings.unlink()
+        if product_bindings:
+            product_bindings.unlink()
         return super().unlink()
 
     def _woo_get_instances_for_company(self):
@@ -223,11 +234,9 @@ class ProductTemplate(models.Model):
         to_link = self.filtered(lambda t: instance not in t.woo_instance_ids)
         if to_link:
             to_link.write({'woo_instance_ids': [(4, instance.id)]})
-        Binding = self.env['kits.connector.binding']
-        bindings = Binding.search([
+        bindings = self.env['kits.woo.product.binding'].with_context(active_test=False).search([
             ('instance_id', '=', instance.id),
-            ('odoo_model', '=', 'product.template'),
-            ('odoo_record_id', 'in', self.ids),
+            ('product_tmpl_id', 'in', self.ids),
         ])
         if bindings:
             bindings._kits_mark_not_synced()
@@ -255,12 +264,11 @@ class ProductTemplate(models.Model):
 
     def _woo_enqueue_import(self, instance):
         instance._ensure_woo_ready()
-        Binding = self.env['kits.connector.binding']
         woo_ids = []
         missing = []
         for template in self:
-            binding = Binding._kits_find_binding(
-                instance, 'product.template', odoo_record_id=template.id,
+            binding = self.env['kits.woo.product.binding']._find(
+                instance, odoo_record_id=template.id,
             )
             if not binding:
                 missing.append(template.display_name)

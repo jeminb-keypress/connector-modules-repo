@@ -15,9 +15,10 @@ class KitsWooSyncWizard(models.TransientModel):
         check_company=True,
     )
     company_id = fields.Many2one(
-        related='instance_id.company_id',
-        store=True,
-        readonly=True,
+        'res.company',
+        string='Company',
+        required=True,
+        default=lambda self: self.env.company,
     )
     direction = fields.Selection(
         selection=[
@@ -58,6 +59,21 @@ class KitsWooSyncWizard(models.TransientModel):
     modified_after = fields.Datetime(
         string='Modified After',
     )
+
+    @api.model
+    def default_get(self, fields_list):
+        values = super().default_get(fields_list)
+        if 'company_id' in fields_list and not values.get('company_id'):
+            values['company_id'] = self.env.company.id
+        instance = self.env['kits.connector.instance'].browse(values.get('instance_id'))
+        if instance.company_id and 'company_id' in fields_list:
+            values['company_id'] = instance.company_id.id
+        return values
+
+    @api.onchange('company_id')
+    def _onchange_company_id(self):
+        if self.instance_id.company_id and self.instance_id.company_id != self.company_id:
+            self.instance_id = False
 
     @api.onchange('direction', 'operation')
     def _onchange_direction_operation(self):

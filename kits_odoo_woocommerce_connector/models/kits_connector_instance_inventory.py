@@ -29,7 +29,7 @@ class KitsConnectorInstanceInventory(models.Model):
             ))
 
         api = self._woo_api()
-        Binding = self._woo_binding()
+        Binding = self.env['kits.woo.variant.binding']
         payload = (job.payload if job else None) or {}
         product_ids = self._woo_parse_id_list(payload.get('product_ids'))
         expected_versions = payload.get('sync_versions') or {}
@@ -37,12 +37,11 @@ class KitsConnectorInstanceInventory(models.Model):
 
         domain = [
             ('instance_id', '=', self.id),
-            ('odoo_model', '=', 'product.product'),
             ('active', '=', True),
             ('sync_state', 'not in', ('deleted', 'deleted_local')),
         ]
         if product_ids and not force_full:
-            domain.append(('odoo_record_id', 'in', product_ids))
+            domain.append(('product_id', 'in', product_ids))
         elif force_full and not product_ids:
             # Cron recovery: prefer not_synced/error bindings; manual full still exports all.
             if payload.get('recovery_only'):
@@ -51,11 +50,9 @@ class KitsConnectorInstanceInventory(models.Model):
         bindings = Binding.search(domain)
         updated = skipped = failed = 0
         errors = []
-        products = self.env['product.product'].browse(
-            bindings.mapped('odoo_record_id')
-        ).exists()
+        products = bindings.mapped('product_id').exists()
         products = products.with_context(warehouse_id=warehouse.id)
-        binding_by_product = {b.odoo_record_id: b for b in bindings}
+        binding_by_product = {b.product_id.id: b for b in bindings}
 
         for product in products:
             binding = binding_by_product.get(product.id)
@@ -68,14 +65,18 @@ class KitsConnectorInstanceInventory(models.Model):
                 continue
             try:
                 qty = float(product.free_qty or 0.0)
-                stock_qty = int(qty) if abs(qty - int(qty)) < 1e-9 else qty
+                stock_qty = binding._woo_export_quantity(qty)
                 payload_body = {
                     'manage_stock': True,
                     'stock_quantity': stock_qty,
-                    'stock_status': 'instock' if qty > 0 else 'outofstock',
+                    'stock_status': 'instock' if float(stock_qty or 0) > 0 else 'outofstock',
                 }
                 external_data = dict(binding.external_data or {})
-                parent_id = external_data.get('parent_id')
+                parent_id = external_data.get('parent_id') or (
+                    binding.product_binding_id.external_id
+                    if binding.product_binding_id.external_id != binding.external_id
+                    else False
+                )
                 woo_id = int(binding.external_id)
                 if parent_id:
                     api.update_variation(int(parent_id), woo_id, payload_body)
@@ -133,10 +134,10 @@ class KitsConnectorInstanceInventory(models.Model):
 
         # Bindings pointing at deleted Odoo products
         for binding in bindings:
-            if binding.odoo_record_id not in products.ids:
+            if binding.product_id.id not in products.ids:
                 skipped += 1
                 binding._kits_mark_error(
-                    self.env._('Bound Odoo product %(id)s is missing.', id=binding.odoo_record_id)
+                    self.env._('Bound Odoo product %(id)s is missing.', id=binding.product_id.id)
                 )
 
         self.woo_last_stock_sync = fields.Datetime.now()
@@ -159,11 +160,9 @@ class KitsConnectorInstanceInventory(models.Model):
         if not products:
             return self.env['kits.connector.sync.job']
 
-        Binding = self._woo_binding()
-        bindings = Binding.search([
+        bindings = self.env['kits.woo.variant.binding'].search([
             ('instance_id', '=', self.id),
-            ('odoo_model', '=', 'product.product'),
-            ('odoo_record_id', 'in', products.ids),
+            ('product_id', 'in', products.ids),
             ('active', '=', True),
             ('sync_state', 'not in', ('deleted', 'deleted_local')),
         ])

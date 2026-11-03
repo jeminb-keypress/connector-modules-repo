@@ -280,22 +280,20 @@ class KitsConnectorInstanceWebhook(models.Model):
         if event == 'deleted':
             if not woo_id:
                 return self.env._('Skipped customer.deleted without id.')
-            binding = self._woo_binding()._kits_find_binding(
-                self, 'res.partner', external_id=str(woo_id),
-            )
+            binding = self._woo_record_binding('res.partner', external_id=str(woo_id))
             if not binding:
                 return self.env._(
-                    'No binding for deleted Woo customer %(id)s.',
+                    'No binding for deleted Woo customer %(id)s. The Odoo contact was kept.',
                     id=woo_id,
                 )
-            partner = binding._kits_get_odoo_record()
-            binding._kits_mark_deleted_remote(
-                message=self.env._(
-                    'Marked unavailable after WooCommerce customer.deleted webhook.'
-                ),
-            )
+            partner = binding.partner_id
+            self._woo_delete_customer_binding(woo_id, reason=self.env._(
+                'Removed the customer binding after WooCommerce customer.deleted. '
+                'Contact %(partner)s was kept.',
+                partner=partner.display_name if partner else woo_id,
+            ))
             return self.env._(
-                'Marked binding for Woo customer %(id)s as deleted remote. '
+                'Removed the customer binding for Woo customer %(id)s. '
                 'Partner %(partner)s was kept.',
                 id=woo_id,
                 partner=partner.display_name if partner else woo_id,
@@ -310,8 +308,8 @@ class KitsConnectorInstanceWebhook(models.Model):
             # Ping / empty payloads
             return self.env._('Skipped webhook without customer payload.')
 
-        binding = self._woo_binding()._kits_find_binding(
-            self, 'res.partner', external_id=str(customer.get('id')),
+        binding = self._woo_record_binding(
+            'res.partner', external_id=str(customer.get('id')),
         )
         if self._woo_payload_is_stale(binding, customer):
             return self.env._(
@@ -527,8 +525,8 @@ class KitsConnectorInstanceWebhook(models.Model):
         if not product.get('id'):
             return self.env._('Skipped product webhook without payload.')
 
-        binding = self._woo_binding()._kits_find_binding(
-            self, 'product.template', external_id=str(product.get('id')),
+        binding = self._woo_record_binding(
+            'product.template', external_id=str(product.get('id')),
         )
         if self._woo_payload_is_stale(binding, product):
             return self.env._(

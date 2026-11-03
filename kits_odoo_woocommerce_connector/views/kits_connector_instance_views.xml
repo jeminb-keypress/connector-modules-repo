@@ -100,6 +100,9 @@
                     <field name="pricelist_id"/>
                     <field name="sales_team_id"/>
                     <field name="woo_import_images"/>
+                    <field name="woo_sync_price"/>
+                    <field name="woo_sync_weight"/>
+                    <field name="woo_create_products"/>
                     <field name="woo_match_by_sku"/>
                     <field name="woo_allow_unmapped_order_lines"/>
                     <field name="woo_order_statuses"/>

@@ -118,10 +118,10 @@ class KitsConnectorInstanceCoupon(models.Model):
         unresolved = []
         deleted = []
         for wid in woo_ids or []:
-            binding = self._woo_binding()._kits_find_binding(
-                self, 'product.product', external_id=str(wid),
-            ) or self._woo_binding()._kits_find_binding(
-                self, 'product.template', external_id=str(wid),
+            binding = self._woo_record_binding(
+                'product.product', external_id=str(wid),
+            ) or self._woo_record_binding(
+                'product.template', external_id=str(wid),
             )
             if binding and binding.sync_state == 'deleted':
                 deleted.append(str(wid))
@@ -307,17 +307,17 @@ class KitsConnectorInstanceCoupon(models.Model):
         woo_ids = []
         missing = []
         for product in products:
-            binding = self._woo_binding()._kits_find_binding(
-                self, 'product.product', odoo_record_id=product.id,
+            binding = self._woo_record_binding(
+                'product.product', odoo_record_id=product.id,
             )
-            if binding and binding.sync_state != 'deleted':
+            if binding and binding.sync_state != 'deleted' and binding.active:
                 woo_ids.append(int(binding.external_id))
                 continue
             tmpl = product.product_tmpl_id
-            binding = self._woo_binding()._kits_find_binding(
-                self, 'product.template', odoo_record_id=tmpl.id,
+            binding = self._woo_record_binding(
+                'product.template', odoo_record_id=tmpl.id,
             )
-            if binding and binding.sync_state != 'deleted':
+            if binding and binding.sync_state != 'deleted' and binding.active:
                 woo_ids.append(int(binding.external_id))
                 continue
             missing.append(product.display_name)

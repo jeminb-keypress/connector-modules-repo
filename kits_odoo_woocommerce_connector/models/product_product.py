@@ -30,20 +30,26 @@ class ProductProduct(models.Model):
             return res
         dirty = _WOO_MAPPED_VARIANT_FIELDS.intersection(vals)
         if dirty:
-            Binding = self.env['kits.connector.binding']
-            Binding._kits_mark_records_not_synced('product.product', self.ids)
-            Binding._kits_mark_records_not_synced(
-                'product.template',
-                self.mapped('product_tmpl_id').ids,
-            )
+            variants = self.env['kits.woo.variant.binding'].search([
+                ('product_id', 'in', self.ids),
+                ('active', '=', True),
+                ('sync_state', '!=', 'deleted'),
+            ])
+            if variants:
+                variants._kits_mark_not_synced()
+            templates = self.env['kits.woo.product.binding'].search([
+                ('product_tmpl_id', 'in', self.mapped('product_tmpl_id').ids),
+                ('active', '=', True),
+                ('sync_state', '!=', 'deleted'),
+            ])
+            if templates:
+                templates._kits_mark_not_synced()
         return res
 
     def unlink(self):
-        self.env['kits.connector.binding']._kits_mark_odoo_records_deleted_local(
-            'product.product',
-            self.ids,
-            self.env._(
-                'Odoo variant was deleted. The WooCommerce variation was left unchanged.'
-            ),
-        )
+        bindings = self.env['kits.woo.variant.binding'].sudo().with_context(
+            active_test=False,
+        ).search([('product_id', 'in', self.ids)])
+        if bindings:
+            bindings.unlink()
         return super().unlink()

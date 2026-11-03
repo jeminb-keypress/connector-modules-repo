@@ -73,10 +73,24 @@ class KitsConnectorInstance(models.Model):
     woo_match_by_sku = fields.Boolean(
         string='Match Products by SKU',
         default=True,
-        help='When no store binding exists, match an unbound Odoo product by SKU '
-             'within the same company. Exactly one SKU match is linked. Several matches '
-             'are logged and skipped — the connector does not guess, and it never matches '
-             'by product name alone.',
+        help='When no variant binding exists for this store, match an Odoo variant by SKU. '
+             'Several matches are logged and the product import fails.',
+    )
+    woo_create_products = fields.Boolean(
+        string='Create Products Automatically',
+        default=True,
+        help='When no Odoo product matches the WooCommerce SKU, create one. '
+             'When this is off, that product import fails and is logged.',
+    )
+    woo_sync_price = fields.Boolean(
+        string='Synchronize Prices',
+        default=True,
+        help='Write WooCommerce prices onto the Odoo product during import.',
+    )
+    woo_sync_weight = fields.Boolean(
+        string='Synchronize Weight',
+        default=False,
+        help='Write WooCommerce weight onto the Odoo product during import.',
     )
     woo_allow_unmapped_order_lines = fields.Boolean(
         string='Allow Unmapped Order Lines',
@@ -138,13 +152,13 @@ class KitsConnectorInstance(models.Model):
                 ('instance_id', '=', instance.id),
                 ('odoo_model', '=', 'sale.order'),
             ])
-            instance.woo_bound_product_count = Binding.search_count([
+            instance.woo_bound_product_count = self.env['kits.woo.variant.binding'].search_count([
                 ('instance_id', '=', instance.id),
-                ('odoo_model', '=', 'product.product'),
+                ('active', '=', True),
             ])
-            instance.woo_bound_customer_count = Binding.search_count([
+            instance.woo_bound_customer_count = self.env['kits.woo.customer.binding'].search_count([
                 ('instance_id', '=', instance.id),
-                ('odoo_model', '=', 'res.partner'),
+                ('active', '=', True),
             ])
 
     @api.constrains('platform_type', 'base_url', 'woo_consumer_key', 'woo_consumer_secret')
@@ -538,15 +552,43 @@ class KitsConnectorInstance(models.Model):
     def _woo_binding(self):
         return self.env['kits.connector.binding']
 
+    def _woo_record_binding(self, odoo_model, *, external_id=False, odoo_record_id=False):
+        """Resolve a binding. Customers, products, and variants use dedicated models."""
+        self.ensure_one()
+        if odoo_model == 'res.partner':
+            return self.env['kits.woo.customer.binding']._find(
+                self, external_id=external_id, odoo_record_id=odoo_record_id,
+            )
+        if odoo_model == 'product.template':
+            return self.env['kits.woo.product.binding']._find(
+                self, external_id=external_id, odoo_record_id=odoo_record_id,
+            )
+        if odoo_model == 'product.product':
+            return self.env['kits.woo.variant.binding']._find(
+                self, external_id=external_id, odoo_record_id=odoo_record_id,
+            )
+        return self._woo_binding()._kits_find_binding(
+            self,
+            odoo_model,
+            external_id=external_id or False,
+            odoo_record_id=odoo_record_id or False,
+        )
+
     def _woo_find_odoo(self, odoo_model, external_id):
         self.ensure_one()
-        binding = self._woo_binding()._kits_find_binding(
-            self, odoo_model, external_id=str(external_id),
-        )
+        binding = self._woo_record_binding(odoo_model, external_id=str(external_id))
         return binding._kits_get_odoo_record() if binding else self.env[odoo_model]
 
     def _woo_bind(self, odoo_model, odoo_record_id, external_id, external_data=None):
         self.ensure_one()
+        if odoo_model == 'res.partner':
+            return self.env['kits.woo.customer.binding']._bind(
+                self, odoo_record_id, external_id,
+            )
+        if odoo_model == 'product.template':
+            return self._woo_bind_product_template(odoo_record_id, external_id, external_data)
+        if odoo_model == 'product.product':
+            return self._woo_bind_product_variant(odoo_record_id, external_id, external_data)
         return self._woo_binding()._kits_bind_record(
             self,
             odoo_model,
@@ -554,6 +596,92 @@ class KitsConnectorInstance(models.Model):
             str(external_id),
             external_data=external_data,
         )
+
+    def _woo_bind_product_template(self, template_id, external_id, external_data=None):
+        self.ensure_one()
+        ProductBinding = self.env['kits.woo.product.binding']
+        external_id = str(external_id)
+        template = self.env['product.template'].browse(int(template_id)).exists()
+        if not template:
+            raise UserError(self.env._('The Odoo product to link does not exist.'))
+        binding = ProductBinding._find(self, external_id=external_id) or ProductBinding._find(
+            self, odoo_record_id=template.id,
+        )
+        data = dict(external_data or {})
+        vals = {
+            'instance_id': self.id,
+            'company_id': self.company_id.id,
+            'product_tmpl_id': template.id,
+            'external_id': external_id,
+            'active': True,
+            'exists_in_store': True,
+            'sync_state': 'synced',
+            'sync_error': False,
+            'sync_date': fields.Datetime.now(),
+            'title': data.get('title') or template.name,
+            'product_type': data.get('type') if data.get('type') in (
+                'simple', 'variable', 'grouped', 'external', 'bundle',
+            ) else 'simple',
+        }
+        if binding:
+            vals['sync_version'] = binding.sync_version + 1
+            if external_data is not None:
+                merged = dict(binding.external_data or {})
+                merged.update(data)
+                vals['external_data'] = merged
+            binding.write(vals)
+            return binding
+        vals['sync_version'] = 1
+        if external_data is not None:
+            vals['external_data'] = data
+        return ProductBinding.create(vals)
+
+    def _woo_bind_product_variant(self, variant_id, external_id, external_data=None):
+        self.ensure_one()
+        VariantBinding = self.env['kits.woo.variant.binding']
+        external_id = str(external_id)
+        variant = self.env['product.product'].browse(int(variant_id)).exists()
+        if not variant:
+            raise UserError(self.env._('The Odoo variant to link does not exist.'))
+        parent = self.env['kits.woo.product.binding']._find(
+            self, odoo_record_id=variant.product_tmpl_id.id,
+        )
+        if not parent:
+            parent_external = (external_data or {}).get('parent_id') or external_id
+            parent = self._woo_bind_product_template(
+                variant.product_tmpl_id.id,
+                parent_external,
+                {'type': 'variable' if parent_external != external_id else 'simple'},
+            )
+        data = dict(external_data or {})
+        binding = VariantBinding._find(self, external_id=external_id) or VariantBinding._find(
+            self, odoo_record_id=variant.id,
+        )
+        vals = {
+            'product_binding_id': parent.id,
+            'instance_id': self.id,
+            'company_id': self.company_id.id,
+            'product_id': variant.id,
+            'external_id': external_id,
+            'sku': data.get('sku') or variant.default_code or False,
+            'active': True,
+            'exists_in_store': True,
+            'sync_state': 'synced',
+            'sync_error': False,
+            'sync_date': fields.Datetime.now(),
+        }
+        if binding:
+            vals['sync_version'] = binding.sync_version + 1
+            if external_data is not None:
+                merged = dict(binding.external_data or {})
+                merged.update(data)
+                vals['external_data'] = merged
+            binding.write(vals)
+            return binding
+        vals['sync_version'] = 1
+        if external_data is not None:
+            vals['external_data'] = data
+        return VariantBinding.create(vals)
 
     @staticmethod
     def _woo_normalize_remote_datetime(value):
@@ -573,7 +701,7 @@ class KitsConnectorInstance(models.Model):
         if not incoming:
             return False
         previous = self._woo_normalize_remote_datetime(
-            (binding.external_data or {}).get('date_modified')
+            (getattr(binding, 'external_data', None) or {}).get('date_modified')
         )
         if not previous:
             return False
@@ -767,11 +895,10 @@ class KitsConnectorInstance(models.Model):
             ])
             if not templates:
                 continue
-            Binding = self.env['kits.connector.binding']
             need_export_ids = []
             for template in templates:
-                binding = Binding._kits_find_binding(
-                    instance, 'product.template', odoo_record_id=template.id,
+                binding = instance._woo_record_binding(
+                    'product.template', odoo_record_id=template.id,
                 )
                 if binding and binding.sync_state in ('deleted', 'deleted_local'):
                     continue
@@ -803,9 +930,8 @@ class KitsConnectorInstance(models.Model):
             ])
             if pending_targeted:
                 continue
-            dirty = self.env['kits.connector.binding'].search_count([
+            dirty = self.env['kits.woo.variant.binding'].search_count([
                 ('instance_id', '=', instance.id),
-                ('odoo_model', '=', 'product.product'),
                 ('active', '=', True),
                 ('sync_state', 'in', ('not_synced', 'error')),
             ])

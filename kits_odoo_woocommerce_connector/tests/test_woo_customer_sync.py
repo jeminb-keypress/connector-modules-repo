@@ -9,8 +9,8 @@ from .common import WooConnectorCommon
 @tagged('post_install', '-at_install', 'kits_woo')
 class TestWooCustomerSync(WooConnectorCommon):
 
-    def test_import_same_email_different_instance_creates_separate_partners(self):
-        """Never merge by email across instances — each store gets its own partner."""
+    def test_import_same_email_different_instance_reuses_partner(self):
+        """The same email across stores reuses one contact and adds a binding per store."""
         other = self.env['kits.connector.instance'].create({
             'name': 'Woo Store B',
             'platform_type': 'woocommerce',
@@ -41,9 +41,9 @@ class TestWooCustomerSync(WooConnectorCommon):
         api_a.get_customers.return_value = iter([woo_customer])
         with self._patch_api(api_a):
             self.instance._woo_import_customers()
-        partner_a = self.env['kits.connector.binding']._kits_find_binding(
-            self.instance, 'res.partner', external_id='101',
-        )._kits_get_odoo_record()
+        partner_a = self.env['kits.woo.customer.binding']._find(
+            self.instance, external_id='101',
+        ).partner_id
         self.assertTrue(partner_a)
         self.assertEqual(partner_a.email, 'shared@example.com')
 
@@ -52,12 +52,17 @@ class TestWooCustomerSync(WooConnectorCommon):
         api_b.get_customers.return_value = iter([woo_b])
         with patch.object(type(other), '_woo_api', return_value=api_b):
             other._woo_import_customers()
-        partner_b = self.env['kits.connector.binding']._kits_find_binding(
-            other, 'res.partner', external_id='202',
-        )._kits_get_odoo_record()
-        self.assertTrue(partner_b)
-        self.assertNotEqual(partner_a.id, partner_b.id)
-        self.assertEqual(partner_a.email, partner_b.email)
+        partner_b = self.env['kits.woo.customer.binding']._find(
+            other, external_id='202',
+        ).partner_id
+        self.assertEqual(partner_a, partner_b)
+        self.assertEqual(partner_a.name, 'Shared Buyer')
+        self.assertEqual(
+            self.env['kits.woo.customer.binding'].search_count([
+                ('partner_id', '=', partner_a.id),
+            ]),
+            2,
+        )
 
     def test_reimport_same_instance_id_updates_existing(self):
         partner = self.env['res.partner'].create({
@@ -85,16 +90,16 @@ class TestWooCustomerSync(WooConnectorCommon):
         })
         with self._patch_api(api):
             summary = self.instance._woo_import_customers(job=job)
-        self.assertIn('updated=1', summary)
+        self.assertIn('reused=1', summary)
         partner.invalidate_recordset()
-        self.assertEqual(partner.name, 'New Name')
-        bindings = self.env['kits.connector.binding'].search([
+        self.assertEqual(partner.name, 'Old Name')
+        self.assertFalse(partner.phone)
+        bindings = self.env['kits.woo.customer.binding'].search([
             ('instance_id', '=', self.instance.id),
-            ('odoo_model', '=', 'res.partner'),
             ('external_id', '=', '77'),
         ])
         self.assertEqual(len(bindings), 1)
-        self.assertEqual(bindings.odoo_record_id, partner.id)
+        self.assertEqual(bindings.partner_id, partner)
 
     def test_fetch_creates_then_updates_without_duplicate(self):
         remote = {
@@ -112,15 +117,14 @@ class TestWooCustomerSync(WooConnectorCommon):
             partner2 = self.instance._woo_fetch_customer_by_id(88)
         self.assertEqual(partner1.id, partner2.id)
         self.assertEqual(
-            self.env['kits.connector.binding'].search_count([
+            self.env['kits.woo.customer.binding'].search_count([
                 ('instance_id', '=', self.instance.id),
-                ('odoo_model', '=', 'res.partner'),
                 ('external_id', '=', '88'),
             ]),
             1,
         )
 
-    def test_fetch_does_not_merge_unbound_email_match(self):
+    def test_fetch_reuses_unbound_email_match_without_changing_it(self):
         existing = self.env['res.partner'].create({
             'name': 'Local Only',
             'email': 'local@example.com',
@@ -138,7 +142,8 @@ class TestWooCustomerSync(WooConnectorCommon):
         api.get_customer.return_value = remote
         with self._patch_api(api):
             fetched = self.instance._woo_fetch_customer_by_id(99)
-        self.assertNotEqual(fetched.id, existing.id)
+        self.assertEqual(fetched, existing)
+        self.assertEqual(existing.name, 'Local Only')
 
     def test_guest_order_does_not_bind_customer_zero(self):
         woo_order = {
@@ -158,10 +163,9 @@ class TestWooCustomerSync(WooConnectorCommon):
         partner = self.instance._woo_partner_from_order(woo_order)
         self.assertTrue(partner)
         self.assertEqual(partner.email, 'guest@example.com')
-        bindings = self.env['kits.connector.binding'].search([
+        bindings = self.env['kits.woo.customer.binding'].search([
             ('instance_id', '=', self.instance.id),
-            ('odoo_model', '=', 'res.partner'),
-            ('odoo_record_id', '=', partner.id),
+            ('partner_id', '=', partner.id),
         ])
         self.assertFalse(bindings)
 

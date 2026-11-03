@@ -48,11 +48,11 @@ Shopify-only behavior stays in this module: GraphQL `errors` on HTTP 200, cost t
 
 | Path | Responsibility |
 |------|----------------|
-| `__manifest__.py` | Depends only on `kits_odoo_base_connector`. Version `20.0.1.0.0`. Not an application. |
+| `__manifest__.py` | Depends only on `kits_odoo_base_connector`. Version `20.0.1.1.0`. Own Shopify app menu. |
 | `services/shopify_api.py` | GraphQL POST, cursor-ready client, throttle retry, redact token from errors |
 | `models/kits_connector_instance.py` | Shopify fields, URL, auth header, connection test, empty-token write guard |
 | `views/kits_connector_instance_views.xml` | Store form, list, search, Shopify Stores action |
-| `views/kits_shopify_menus.xml` | Menus under the base Connectors app |
+| `views/kits_shopify_menus.xml` | Independent Shopify root menu and platform-filtered job, log, and binding actions |
 | `tests/` | Mocked TransactionCase tests, tag `kits_shopify` |
 | `README.md` | Install and connection steps |
 | `ai.md` | This document |
@@ -154,3 +154,34 @@ The first install command used `--test-enable` without a tag, so Odoo also ran u
 **Reason**
 
 - Phase 1 Shopify connector: configure a store and test the Admin GraphQL API on the existing base instance.
+
+### 2026-11-02 — Independent Shopify menu
+
+**Version:** `20.0.1.1.0`.
+
+**Hierarchy** (`views/kits_shopify_menus.xml`)
+
+- Shopify
+  - Stores
+  - Sync Jobs
+  - Logs
+  - Bindings
+  - Configuration
+    - Shopify Settings
+
+No extra operation menus were added. Product, order, and inventory sync still do not exist.
+
+**Shared versus platform UI**
+
+- Jobs, logs, and bindings stay on the base models and views.
+- `kits_shopify_sync_job_action`, `kits_shopify_log_action`, and `kits_shopify_binding_action` use domain `platform_type = shopify`.
+- Stores and Shopify Settings reuse `kits_shopify_instance_action`.
+- Same connector user and administrator groups as before.
+- Upgrade calls `kits_remove_connector_app_menus` so the old Connectors parent is removed after these items move.
+
+**Files**
+
+- `__manifest__.py`
+- `views/kits_shopify_menus.xml`
+- `migrations/20.0.1.1.0/end-migrate.py`
+- `ai.md`

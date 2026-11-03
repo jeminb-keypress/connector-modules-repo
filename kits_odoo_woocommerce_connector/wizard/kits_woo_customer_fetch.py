@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-from odoo import fields, models
+from odoo import api, fields, models
 from odoo.exceptions import UserError
 
 
@@ -18,9 +18,9 @@ class KitsWooCustomerFetch(models.TransientModel):
     )
     company_id = fields.Many2one(
         'res.company',
-        related='instance_id.company_id',
-        store=True,
-        readonly=True,
+        string='Company',
+        required=True,
+        default=lambda self: self.env.company,
     )
     woo_customer_id = fields.Char(
         string='WooCommerce Customer ID',
@@ -34,6 +34,21 @@ class KitsWooCustomerFetch(models.TransientModel):
         help='Contact form that opened this wizard (for defaults only). '
              'Fetch always resolves by store + Woo ID and never merges by email.',
     )
+
+    @api.model
+    def default_get(self, fields_list):
+        values = super().default_get(fields_list)
+        if 'company_id' in fields_list and not values.get('company_id'):
+            values['company_id'] = self.env.company.id
+        instance = self.env['kits.connector.instance'].browse(values.get('instance_id'))
+        if instance.company_id and 'company_id' in fields_list:
+            values['company_id'] = instance.company_id.id
+        return values
+
+    @api.onchange('company_id')
+    def _onchange_company_id(self):
+        if self.instance_id.company_id and self.instance_id.company_id != self.company_id:
+            self.instance_id = False
 
     def action_fetch(self):
         self.ensure_one()

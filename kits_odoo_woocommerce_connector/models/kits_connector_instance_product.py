@@ -2,6 +2,7 @@
 import logging
 
 from odoo import fields, models
+from odoo.exceptions import UserError
 from odoo.fields import Command
 from odoo.tools import html2plaintext
 
@@ -47,7 +48,8 @@ class KitsConnectorInstanceProduct(models.Model):
 
         for woo_product in products_iter:
             try:
-                result = self._woo_import_one_product(woo_product, job=job)
+                with self.env.cr.savepoint():
+                    result = self._woo_import_one_product(woo_product, job=job)
                 if result == 'created':
                     imported += 1
                 elif result == 'updated':
@@ -72,8 +74,8 @@ class KitsConnectorInstanceProduct(models.Model):
                     job=job,
                 )
                 if woo_id:
-                    binding = self._woo_binding()._kits_find_binding(
-                        self, 'product.template', external_id=str(woo_id),
+                    binding = self._woo_record_binding(
+                        'product.template', external_id=str(woo_id),
                     )
                     if binding:
                         binding._kits_mark_error(str(exc))
@@ -92,11 +94,14 @@ class KitsConnectorInstanceProduct(models.Model):
             try:
                 remote = api.get_product(woo_id)
             except Exception as exc:  # noqa: BLE001
-                binding = self._woo_binding()._kits_find_binding(
-                    self, 'product.template', external_id=str(woo_id),
-                )
-                if binding:
-                    binding._kits_mark_error(str(exc))
+                if self._woo_is_not_found(exc):
+                    self._woo_mark_product_deleted_remote(woo_id, message=str(exc))
+                else:
+                    binding = self._woo_record_binding(
+                        'product.template', external_id=str(woo_id),
+                    )
+                    if binding:
+                        binding._kits_mark_error(str(exc))
                 self._kits_log_operation(
                     operation='woo_import_products',
                     status='failure',
@@ -106,21 +111,29 @@ class KitsConnectorInstanceProduct(models.Model):
                 )
                 continue
             if not remote or not remote.get('id'):
-                binding = self._woo_binding()._kits_find_binding(
-                    self, 'product.template', external_id=str(woo_id),
+                self._woo_mark_product_deleted_remote(
+                    woo_id,
+                    message=self.env._(
+                        'WooCommerce product %(id)s is missing or inaccessible.',
+                        id=woo_id,
+                    ),
                 )
-                if binding:
-                    binding._kits_mark_error(
-                        self.env._('WooCommerce product %(id)s is missing or inaccessible.', id=woo_id)
-                    )
                 continue
             yield remote
 
     def _woo_import_one_product(self, woo_product, job=None):
+        """Match or create an Odoo product, then store Woo-only details on bindings.
+
+        Validation runs before any product or binding write. A failure rolls back
+        with the caller's savepoint.
+        """
         self.ensure_one()
         woo_id = woo_product.get('id')
         if not woo_id:
-            return 'skipped'
+            raise UserError(self.env._(
+                'Skipped a WooCommerce product with no id on %(store)s.',
+                store=self.display_name,
+            ))
 
         status = (woo_product.get('status') or 'publish').lower()
         if status == 'trash':
@@ -133,81 +146,441 @@ class KitsConnectorInstanceProduct(models.Model):
             )
             return 'deleted'
 
-        if self._woo_skip_deleted_local_product(woo_id, job=job):
-            return 'skipped'
+        rows = self._woo_validate_import_variants(woo_product)
+        matched_template = self.env['product.template']
+        resolved = []
+        for row in rows:
+            product, how = self._woo_match_import_variant(row)
+            if product:
+                matched_template |= product.product_tmpl_id
+            resolved.append((row, product, how))
+        if len(matched_template) > 1:
+            raise UserError(self.env._(
+                'WooCommerce product %(id)s on %(store)s matches more than one Odoo product. '
+                'Nothing was linked.',
+                id=woo_id,
+                store=self.display_name,
+            ))
 
-        ptype = woo_product.get('type') or 'simple'
-        template, result = self._woo_match_or_prepare_template(woo_product)
-        if result == 'ambiguous':
-            return 'ambiguous'
-
-        category = self._woo_ensure_categories(woo_product.get('categories') or [])
-        vals = self._woo_prepare_template_vals(woo_product, category)
-        # Context flag avoids marking Not Synced while applying a remote pull.
+        created = False
         write_ctx = {'kits_woo_skip_dirty': True}
-        if template:
-            template.with_context(**write_ctx).write(vals)
+        if matched_template:
+            template = matched_template
+            for row, product, how in resolved:
+                if product and product.product_tmpl_id != template:
+                    raise UserError(self.env._(
+                        'Variation %(variant)s of WooCommerce product %(id)s does not belong to product %(product)s.',
+                        variant=row['external_id'],
+                        id=woo_id,
+                        product=template.display_name,
+                    ))
+                if not product:
+                    on_template = template.product_variant_ids.filtered(
+                        lambda variant, sku=row['sku']: (variant.default_code or '') == sku
+                    )
+                    if len(on_template) != 1:
+                        raise UserError(self.env._(
+                            'SKU %(sku)s from WooCommerce product %(id)s is not on %(product)s. '
+                            'Import stopped before creating a partial link.',
+                            sku=row['sku'],
+                            id=woo_id,
+                            product=template.display_name,
+                        ))
+            self._woo_apply_allowed_product_updates(template, woo_product)
+        elif not self.woo_create_products:
+            skus = ', '.join(row['sku'] for row in rows)
+            raise UserError(self.env._(
+                'No Odoo product matches SKU %(sku)s for WooCommerce product %(id)s on %(store)s. '
+                'Create Products Automatically is turned off, so nothing was created.',
+                sku=skus,
+                id=woo_id,
+                store=self.display_name,
+            ))
         else:
-            template = self.env['product.template'].with_context(**write_ctx).create(vals)
-            result = 'created'
+            template = self._woo_create_product_from_remote(woo_product, rows)
+            created = True
+            if (woo_product.get('type') or 'simple') == 'variable':
+                self._woo_import_variable_product(template, woo_product)
+                self._woo_assign_created_variant_skus(template, woo_product, rows)
 
-        tag_ids = self._woo_ensure_tags(woo_product.get('tags') or [])
-        if tag_ids is not None and 'product_tag_ids' in template._fields:
-            template.with_context(**write_ctx).write({'product_tag_ids': [Command.set(tag_ids)]})
-
-        binding = self._woo_bind('product.template', template.id, woo_id, external_data={
-            'sku': woo_product.get('sku'),
-            'type': ptype,
-            'status': woo_product.get('status'),
-            'date_modified': self._woo_normalize_remote_datetime(
-                woo_product.get('date_modified_gmt') or woo_product.get('date_modified')
-            ) or False,
-            'variation_id': False,
-            'meta': self._woo_meta_snapshot(woo_product),
-        })
-        # Imported from this store → keep it selected for future exports to this store only
+        categories = self._woo_category_records(woo_product.get('categories') or [])
+        tag_ids = self._woo_ensure_tags(woo_product.get('tags') or []) or []
+        product_binding = self._woo_upsert_product_binding(
+            template, woo_product, categories, tag_ids, len(rows),
+        )
         if self not in template.woo_instance_ids:
-            template.with_context(**write_ctx).write({
-                'woo_instance_ids': [(4, self.id)],
-            })
+            template.with_context(**write_ctx).write({'woo_instance_ids': [(4, self.id)]})
 
-        self._woo_sync_template_images(template, woo_product.get('images') or [], binding=binding)
+        for row in rows:
+            variant = template.product_variant_ids.filtered(
+                lambda variant, sku=row['sku']: (variant.default_code or '') == sku
+            )[:1]
+            if not variant and len(template.product_variant_ids) == 1 and len(rows) == 1:
+                variant = template.product_variant_id
+                if created and not variant.default_code:
+                    variant.with_context(**write_ctx).write({'default_code': row['sku']})
+            if not variant:
+                raise UserError(self.env._(
+                    'Could not link SKU %(sku)s for WooCommerce product %(id)s on %(store)s.',
+                    sku=row['sku'],
+                    id=woo_id,
+                    store=self.display_name,
+                ))
+            self._woo_apply_allowed_variant_updates(variant, row, created=created)
+            self._woo_upsert_variant_binding(product_binding, variant, row)
 
+        self._woo_sync_template_images(
+            template, woo_product.get('images') or [], binding=product_binding,
+        )
+        for row in rows:
+            image = (row.get('payload') or {}).get('image') or {}
+            if not image and len(rows) == 1:
+                continue
+            variant_binding = self.env['kits.woo.variant.binding']._find(
+                self, external_id=row['external_id'],
+            )
+            variant = variant_binding.product_id if variant_binding else self.env['product.product']
+            if variant and image:
+                self._woo_sync_variant_image(variant, image, binding=variant_binding)
+        return 'created' if created else 'updated'
+
+    def _woo_validate_import_variants(self, woo_product):
+        """Return variant rows or raise before any Odoo product is written."""
+        self.ensure_one()
+        woo_id = woo_product.get('id')
+        ptype = woo_product.get('type') or 'simple'
         if ptype == 'variable':
-            self._woo_import_variable_product(template, woo_product)
-        else:
-            variant = template.product_variant_id
-            if variant:
-                variant_vals = {
-                    'default_code': woo_product.get('sku') or variant.default_code,
-                    'lst_price': float(
-                        woo_product.get('regular_price') or woo_product.get('price') or 0.0
-                    ),
-                }
-                barcode = (woo_product.get('barcode') or '').strip() or False
-                if barcode and 'barcode' in variant._fields:
-                    # Avoid company-wide barcode conflicts: only set when free or already ours
-                    conflict = self.env['product.product'].search([
-                        ('barcode', '=', barcode),
-                        ('id', '!=', variant.id),
-                        ('company_id', 'in', [False, self.company_id.id]),
-                    ], limit=1)
-                    if not conflict:
-                        variant_vals['barcode'] = barcode
-                cost = self._woo_extract_cost(woo_product)
-                if cost is not None:
-                    variant_vals['standard_price'] = cost
-                variant.with_context(**write_ctx).write(variant_vals)
-                self._woo_bind('product.product', variant.id, woo_id, external_data={
-                    'sku': woo_product.get('sku'),
-                    'parent_id': False,
-                    'variation_id': False,
-                    'barcode': barcode or False,
-                    'date_modified': self._woo_normalize_remote_datetime(
-                        woo_product.get('date_modified_gmt') or woo_product.get('date_modified')
-                    ) or False,
+            attributes = [
+                attr for attr in (woo_product.get('attributes') or [])
+                if attr.get('variation')
+            ]
+            options = [
+                option for attr in attributes for option in (attr.get('options') or []) if option
+            ]
+            if not attributes or not options:
+                raise UserError(self.env._(
+                    'WooCommerce variable product %(id)s has no option values. '
+                    'Import was not applied.',
+                    id=woo_id,
+                ))
+            variations = list(self._woo_api().get_variations(woo_id))
+            if not variations:
+                raise UserError(self.env._(
+                    'WooCommerce variable product %(id)s has no variations. Import was not applied.',
+                    id=woo_id,
+                ))
+            rows = []
+            seen = []
+            for variation in variations:
+                if not variation.get('id'):
+                    raise UserError(self.env._(
+                        'WooCommerce product %(id)s has a variation with no id. Import was not applied.',
+                        id=woo_id,
+                    ))
+                sku = (variation.get('sku') or '').strip()
+                if not sku:
+                    raise UserError(self.env._(
+                        'Variation %(variant)s of WooCommerce product %(id)s has no SKU. '
+                        'Import was not applied.',
+                        variant=variation.get('id'),
+                        id=woo_id,
+                    ))
+                option_values = [
+                    (attr.get('option') or '').strip()
+                    for attr in (variation.get('attributes') or [])
+                ]
+                if not any(option_values):
+                    raise UserError(self.env._(
+                        'Variation %(variant)s of WooCommerce product %(id)s has no option values. '
+                        'Import was not applied.',
+                        variant=variation.get('id'),
+                        id=woo_id,
+                    ))
+                key = sku.casefold()
+                if key in seen:
+                    raise UserError(self.env._(
+                        'SKU %(sku)s is repeated on WooCommerce product %(id)s. Import was not applied.',
+                        sku=sku,
+                        id=woo_id,
+                    ))
+                seen.append(key)
+                rows.append({
+                    'external_id': str(variation['id']),
+                    'sku': sku,
+                    'payload': variation,
+                    'parent_id': str(woo_id),
                 })
-        return result
+            return rows
+
+        sku = (woo_product.get('sku') or '').strip()
+        if not sku:
+            raise UserError(self.env._(
+                'WooCommerce product %(id)s has no SKU. Import was not applied.',
+                id=woo_id,
+            ))
+        return [{
+            'external_id': str(woo_id),
+            'sku': sku,
+            'payload': woo_product,
+            'parent_id': False,
+        }]
+
+    def _woo_match_import_variant(self, row):
+        """Return (product.product, how). Raises when several Odoo SKUs match."""
+        self.ensure_one()
+        Variant = self.env['kits.woo.variant.binding']
+        by_external = Variant._find(self, external_id=row['external_id'])
+        if by_external and by_external.product_id:
+            return by_external.product_id, 'external_id'
+        product_binding = self.env['kits.woo.product.binding']._find(
+            self, external_id=row['external_id'],
+        )
+        if product_binding and product_binding.product_tmpl_id.product_variant_id:
+            return product_binding.product_tmpl_id.product_variant_id, 'product_external_id'
+        if self.woo_match_by_sku:
+            by_sku = Variant._find(self, sku=row['sku'])
+            if by_sku and by_sku.product_id:
+                return by_sku.product_id, 'store_sku'
+            products = self.env['product.product'].search([
+                ('default_code', '=', row['sku']),
+                ('company_id', 'in', [False, self.company_id.id]),
+            ])
+            if len(products) > 1:
+                self._woo_log_sku_ambiguity(row['sku'], products.mapped('product_tmpl_id'))
+                raise UserError(self.env._(
+                    'SKU %(sku)s matches %(count)s Odoo variants. '
+                    'WooCommerce product import was not applied.',
+                    sku=row['sku'],
+                    count=len(products),
+                ))
+            if products:
+                return products, 'odoo_sku'
+        return self.env['product.product'], 'none'
+
+    def _woo_create_product_from_remote(self, woo_product, rows):
+        self.ensure_one()
+        ptype = woo_product.get('type') or 'simple'
+        category = self._woo_ensure_categories(woo_product.get('categories') or [])
+        vals = {
+            'name': woo_product.get('name') or f"Woo Product {woo_product.get('id')}",
+            'type': 'consu',
+            'is_storable': not bool(woo_product.get('virtual')),
+            'company_id': self.company_id.id,
+            'sale_ok': True,
+            'active': True,
+        }
+        if ptype != 'variable' and rows:
+            vals['default_code'] = rows[0]['sku']
+        if self.woo_sync_price:
+            vals['list_price'] = self._woo_remote_price(woo_product)
+        if self.woo_sync_weight:
+            weight = self._woo_remote_weight(woo_product)
+            if weight is not None:
+                vals['weight'] = weight
+        if category:
+            vals['categ_id'] = category.id
+        return self.env['product.template'].with_context(kits_woo_skip_dirty=True).create(vals)
+
+    def _woo_apply_allowed_product_updates(self, template, woo_product):
+        vals = {}
+        if self.woo_sync_price:
+            vals['list_price'] = self._woo_remote_price(woo_product)
+        if self.woo_sync_weight:
+            weight = self._woo_remote_weight(woo_product)
+            if weight is not None:
+                vals['weight'] = weight
+        if vals:
+            template.with_context(kits_woo_skip_dirty=True).write(vals)
+
+    def _woo_apply_allowed_variant_updates(self, variant, row, created=False):
+        vals = {}
+        if created and not variant.default_code:
+            vals['default_code'] = row['sku']
+        if created:
+            cost = self._woo_extract_cost(row.get('payload') or {})
+            if cost is not None:
+                vals['standard_price'] = cost
+        if self.woo_sync_price:
+            vals['lst_price'] = self._woo_remote_price(row.get('payload') or {})
+        if self.woo_sync_weight and not row.get('parent_id'):
+            weight = self._woo_remote_weight(row.get('payload') or {})
+            if weight is not None:
+                vals['weight'] = weight
+        if vals:
+            variant.with_context(kits_woo_skip_dirty=True).write(vals)
+
+    def _woo_assign_created_variant_skus(self, template, woo_product, rows):
+        self.ensure_one()
+        attr_value_map = {}
+        for line in template.attribute_line_ids:
+            for ptav in line.product_template_value_ids:
+                attr_value_map[(
+                    line.attribute_id.name.strip().lower(),
+                    ptav.name.strip().lower(),
+                )] = ptav
+        for row in rows:
+            combination = self.env['product.template.attribute.value']
+            for attr in (row.get('payload') or {}).get('attributes') or []:
+                key = (
+                    (attr.get('name') or '').strip().lower(),
+                    (attr.get('option') or '').strip().lower(),
+                )
+                ptav = attr_value_map.get(key)
+                if ptav:
+                    combination |= ptav
+            variant = template._get_variant_for_combination(combination) if combination else self.env['product.product']
+            if variant and not variant.default_code:
+                variant.with_context(kits_woo_skip_dirty=True).write({'default_code': row['sku']})
+
+    @staticmethod
+    def _woo_remote_price(payload):
+        try:
+            return float(payload.get('regular_price') or payload.get('price') or 0.0)
+        except (TypeError, ValueError):
+            return 0.0
+
+    @staticmethod
+    def _woo_remote_weight(payload):
+        raw = (payload or {}).get('weight')
+        if raw in (None, '', False):
+            return None
+        try:
+            return float(raw)
+        except (TypeError, ValueError):
+            return None
+
+    def _woo_category_records(self, woo_categories):
+        primary = self._woo_ensure_categories(woo_categories)
+        categories = primary
+        for woo_cat in woo_categories or []:
+            woo_cat_id = woo_cat.get('id')
+            if not woo_cat_id:
+                continue
+            found = self._woo_find_odoo('product.category', woo_cat_id)
+            if found:
+                categories |= found
+        return categories
+
+    def _woo_upsert_product_binding(self, template, woo_product, categories, tag_ids, variant_count):
+        self.ensure_one()
+        ProductBinding = self.env['kits.woo.product.binding']
+        external_id = str(woo_product.get('id'))
+        ptype = woo_product.get('type') or 'simple'
+        if ptype not in ('simple', 'variable', 'grouped', 'external', 'bundle'):
+            ptype = 'simple'
+        images = [
+            {'id': img.get('id'), 'src': img.get('src'), 'name': img.get('name')}
+            for img in (woo_product.get('images') or [])
+            if isinstance(img, dict) and img.get('src')
+        ]
+        modified = self._woo_parse_datetime(
+            woo_product.get('date_modified_gmt') or woo_product.get('date_modified')
+        )
+        created_on = self._woo_parse_datetime(
+            woo_product.get('date_created_gmt') or woo_product.get('date_created')
+        )
+        vals = {
+            'instance_id': self.id,
+            'company_id': self.company_id.id,
+            'product_tmpl_id': template.id,
+            'external_id': external_id,
+            'title': woo_product.get('name') or template.name,
+            'description_short': woo_product.get('short_description') or False,
+            'description': woo_product.get('description') or False,
+            'product_type': ptype,
+            'published': (woo_product.get('status') or 'publish').lower() == 'publish',
+            'taxable': (woo_product.get('tax_status') or 'taxable') == 'taxable',
+            'virtual': bool(woo_product.get('virtual')),
+            'category_ids': [Command.set(categories.ids)],
+            'tag_ids': [Command.set(tag_ids)],
+            'image_urls': images,
+            'exists_in_store': True,
+            'variant_count': variant_count,
+            'store_create_date': created_on,
+            'store_write_date': modified,
+            'active': True,
+            'sync_state': 'synced',
+            'sync_error': False,
+            'sync_date': fields.Datetime.now(),
+            'external_data': {
+                'sku': woo_product.get('sku'),
+                'type': ptype,
+                'date_modified': self._woo_normalize_remote_datetime(
+                    woo_product.get('date_modified_gmt') or woo_product.get('date_modified')
+                ) or False,
+            },
+        }
+        binding = ProductBinding._find(self, external_id=external_id) or ProductBinding._find(
+            self, odoo_record_id=template.id,
+        )
+        if binding:
+            vals['sync_version'] = binding.sync_version + 1
+            merged = dict(binding.external_data or {})
+            merged.update(vals['external_data'])
+            vals['external_data'] = merged
+            binding.write(vals)
+            return binding
+        vals['sync_version'] = 1
+        return ProductBinding.create(vals)
+
+    def _woo_upsert_variant_binding(self, product_binding, variant, row):
+        self.ensure_one()
+        payload = row.get('payload') or {}
+        image = payload.get('image') or {}
+        images = [{'src': image.get('src'), 'id': image.get('id')}] if isinstance(image, dict) and image.get('src') else []
+        if not images and row['external_id'] == product_binding.external_id:
+            images = product_binding.image_urls or []
+        vals = {
+            'product_binding_id': product_binding.id,
+            'instance_id': self.id,
+            'company_id': self.company_id.id,
+            'product_id': variant.id,
+            'external_id': row['external_id'],
+            'sku': row['sku'],
+            'title': payload.get('name') or payload.get('description') or variant.display_name,
+            'product_url': payload.get('permalink') or False,
+            'exists_in_store': True,
+            'manage_stock': bool(payload.get('manage_stock')),
+            'image_urls': images,
+            'store_create_date': self._woo_parse_datetime(
+                payload.get('date_created_gmt') or payload.get('date_created')
+            ),
+            'store_write_date': self._woo_parse_datetime(
+                payload.get('date_modified_gmt') or payload.get('date_modified')
+            ),
+            'active': True,
+            'sync_state': 'synced',
+            'sync_error': False,
+            'sync_date': fields.Datetime.now(),
+            'external_data': {
+                'sku': row['sku'],
+                'parent_id': row.get('parent_id') or False,
+                'date_modified': self._woo_normalize_remote_datetime(
+                    payload.get('date_modified_gmt') or payload.get('date_modified')
+                ) or False,
+            },
+        }
+        Variant = self.env['kits.woo.variant.binding']
+        binding = Variant._find(self, external_id=row['external_id']) or Variant._find(
+            self, odoo_record_id=variant.id,
+        )
+        if binding:
+            vals['sync_version'] = binding.sync_version + 1
+            merged = dict(binding.external_data or {})
+            merged.update(vals['external_data'])
+            vals['external_data'] = merged
+            binding.write(vals)
+            return binding
+        vals['sync_version'] = 1
+        return Variant.create(vals)
+
+    def _woo_archive_variant_remote(self, woo_id, message=False):
+        self.ensure_one()
+        binding = self.env['kits.woo.variant.binding']._find(self, external_id=str(woo_id))
+        if not binding:
+            return False
+        binding._kits_mark_deleted_remote(message=message)
+        return True
 
     def _woo_match_or_prepare_template(self, woo_product):
         """Match order: binding → validated SKU (unbound) → create."""
@@ -350,11 +723,7 @@ class KitsConnectorInstanceProduct(models.Model):
         return remote
 
     def _woo_mark_product_deleted_remote(self, woo_id, message=False):
-        """Mark this store's product bindings deleted and drop only this store from Connected Instances.
-
-        Does not archive or delete the Odoo product, and does not touch other stores.
-        Safe to call more than once.
-        """
+        """Archive this store's product and variant bindings. Keep the Odoo product."""
         self.ensure_one()
         woo_key = str(woo_id)
         message = message or self.env._(
@@ -362,53 +731,16 @@ class KitsConnectorInstanceProduct(models.Model):
             id=woo_key,
             store=self.name,
         )
-        Binding = self._woo_binding()
-        template_binding = Binding._kits_find_binding(
-            self, 'product.template', external_id=woo_key,
-        )
-        template = self.env['product.template']
+        template_binding = self.env['kits.woo.product.binding']._find(self, external_id=woo_key)
+        templates = self.env['product.template']
         if template_binding:
+            variants = template_binding.with_context(active_test=False).variant_binding_ids
+            if variants:
+                variants._kits_mark_deleted_remote(message=message)
             template_binding._kits_mark_deleted_remote(message=message)
-            template = template_binding._kits_get_odoo_record()
-
-        variant_domain = [
-            ('instance_id', '=', self.id),
-            ('odoo_model', '=', 'product.product'),
-        ]
-        if template:
-            variant_domain.append(('odoo_record_id', 'in', template.with_context(active_test=False).product_variant_ids.ids or [0]))
-        variants = Binding.search(variant_domain)
-        if not template:
-            variants = Binding.search([
-                ('instance_id', '=', self.id),
-                ('odoo_model', '=', 'product.product'),
-                ('external_id', '=', woo_key),
-            ])
-            parent_matches = Binding.search([
-                ('instance_id', '=', self.id),
-                ('odoo_model', '=', 'product.product'),
-            ]).filtered(
-                lambda binding: str((binding.external_data or {}).get('parent_id') or '') == woo_key
-            )
-            variants = variants | parent_matches
-        if variants:
-            variants._kits_mark_deleted_remote(message=message)
-
-        simple = Binding.search([
-            ('instance_id', '=', self.id),
-            ('odoo_model', '=', 'product.product'),
-            ('external_id', '=', woo_key),
-        ])
-        if simple:
-            simple._kits_mark_deleted_remote(message=message)
-
-        templates = template
-        for binding in variants | simple:
-            record = binding._kits_get_odoo_record()
-            if record and record._name == 'product.product':
-                templates |= record.product_tmpl_id
-            elif record and record._name == 'product.template':
-                templates |= record
+            templates = template_binding.product_tmpl_id
+        else:
+            self._woo_archive_variant_remote(woo_key, message=message)
         for tmpl in templates:
             if self in tmpl.woo_instance_ids:
                 tmpl.with_context(kits_woo_skip_dirty=True).write({
@@ -493,9 +825,8 @@ class KitsConnectorInstanceProduct(models.Model):
         return tag_ids
 
     def _woo_import_variable_product(self, template, woo_product):
-        """Import attributes/variations for a variable WooCommerce product."""
+        """Create attribute lines for a newly created variable product."""
         self.ensure_one()
-        api = self._woo_api()
         woo_attrs = woo_product.get('attributes') or []
 
         attr_lines_cmds = []
@@ -539,12 +870,11 @@ class KitsConnectorInstanceProduct(models.Model):
                     'value_ids': [Command.set(value_ids)],
                 }))
         if attr_lines_cmds:
-            template.write({'attribute_line_ids': attr_lines_cmds})
+            template.with_context(kits_woo_skip_dirty=True).write({
+                'attribute_line_ids': attr_lines_cmds,
+            })
 
         template._create_variant_ids()
-
-        for variation in api.get_variations(woo_product['id']):
-            self._woo_import_one_variation(template, woo_product['id'], variation, attr_value_map)
 
     def _woo_import_one_variation(self, template, parent_woo_id, variation, attr_value_map):
         self.ensure_one()
@@ -664,8 +994,8 @@ class KitsConnectorInstanceProduct(models.Model):
         errors = []
         for template in templates:
             try:
-                binding = self._woo_binding()._kits_find_binding(
-                    self, 'product.template', odoo_record_id=template.id,
+                binding = self._woo_record_binding(
+                    'product.template', odoo_record_id=template.id,
                 )
                 expected = expected_versions.get(str(template.id))
                 if binding and expected is not None and binding._kits_is_stale_job(expected):
@@ -696,8 +1026,8 @@ class KitsConnectorInstanceProduct(models.Model):
                     details=f'product.template,{template.id}',
                     job=job,
                 )
-                binding = self._woo_binding()._kits_find_binding(
-                    self, 'product.template', odoo_record_id=template.id,
+                binding = self._woo_record_binding(
+                    'product.template', odoo_record_id=template.id,
                 )
                 if binding:
                     binding._kits_mark_error(str(exc))
@@ -720,9 +1050,8 @@ class KitsConnectorInstanceProduct(models.Model):
 
     def _woo_export_one_template(self, template, api, *, allow_recreate=False):
         self.ensure_one()
-        Binding = self._woo_binding()
-        binding = Binding._kits_find_binding(
-            self, 'product.template', odoo_record_id=template.id,
+        binding = self._woo_record_binding(
+            'product.template', odoo_record_id=template.id,
         )
         if binding and binding.sync_state in ('deleted', 'deleted_local') and not allow_recreate:
             return 'skipped'
@@ -747,7 +1076,8 @@ class KitsConnectorInstanceProduct(models.Model):
         if template.barcode and not is_variable:
             payload['barcode'] = template.barcode
 
-        # Categories
+        # Categories stay on the shared binding model.
+        Binding = self._woo_binding()
         categ_binding = Binding._kits_find_binding(
             self, 'product.category', odoo_record_id=template.categ_id.id,
         ) if template.categ_id else False
@@ -889,8 +1219,8 @@ class KitsConnectorInstanceProduct(models.Model):
             if image_payload:
                 payload['image'] = image_payload
 
-            binding = Binding._kits_find_binding(
-                self, 'product.product', odoo_record_id=variant.id,
+            binding = self._woo_record_binding(
+                'product.product', odoo_record_id=variant.id,
             )
             if binding and binding.sync_state in ('deleted', 'deleted_local') and not allow_recreate:
                 continue

@@ -7,3 +7,4 @@ from . import test_woo_tax_coupon_refund_webhook
 from . import test_woo_order_sync
 from . import test_woo_record_sync
 from . import test_woo_deletion_rules
+from . import test_woo_separate_bindings

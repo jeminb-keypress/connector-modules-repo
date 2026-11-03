@@ -49,7 +49,7 @@ class TestWooDeletionAndSyncRules(WooConnectorCommon):
         api.get_products.return_value = iter([self._simple_payload(501, 'AMBIG-1', name='Should Not Apply')])
         with self._patch_api(api):
             summary = self.instance._woo_import_products()
-        self.assertIn('skipped=1', summary)
+        self.assertIn('failed=1', summary)
         self.assertFalse(self.env['kits.connector.binding'].search([
             ('instance_id', '=', self.instance.id),
             ('external_id', '=', '501'),
@@ -96,23 +96,22 @@ class TestWooDeletionAndSyncRules(WooConnectorCommon):
         with self._patch_api(api):
             self.instance._woo_import_customers()
             self.instance._woo_import_customers()
-        binding = self.env['kits.connector.binding']._kits_find_binding(
-            self.instance, 'res.partner', external_id='44',
+        binding = self.env['kits.woo.customer.binding']._find(
+            self.instance, external_id='44',
         )
-        partner = binding._kits_get_odoo_record()
+        partner = binding.partner_id
         self.assertEqual(partner.name, 'Ada Lovelace')
         self.assertEqual(partner.phone, '555')
-        if 'mobile' in partner._fields:
-            self.assertEqual(partner.mobile, '999')
-        else:
-            self.assertEqual((binding.external_data or {}).get('mobile'), '999')
         self.assertFalse(partner.parent_id)
         self.assertEqual(partner.woo_company_name, 'Analytical Engines')
-        self.assertEqual((binding.external_data or {}).get('company'), 'Analytical Engines')
-        self.assertEqual(partner.street, '1 Compute')
-        self.assertFalse(partner.child_ids)
+        invoice = partner.child_ids.filtered(lambda child: child.type == 'invoice')
+        delivery = partner.child_ids.filtered(lambda child: child.type == 'delivery')
+        self.assertEqual(invoice.street, '1 Compute')
+        self.assertEqual(delivery.street, '2 Ship')
+        self.assertFalse(partner.street)
         self.assertEqual(self.env['res.partner'].search_count([
             ('email', '=', 'ada@example.com'),
+            ('parent_id', '=', False),
         ]), 1)
         self.assertFalse(self.env['res.partner'].search([
             ('name', '=', 'Analytical Engines'),
@@ -132,10 +131,10 @@ class TestWooDeletionAndSyncRules(WooConnectorCommon):
         api_b.get_customers.return_value = iter([other_customer])
         with patch.object(type(other), '_woo_api', return_value=api_b):
             other._woo_import_customers()
-        other_partner = self.env['kits.connector.binding']._kits_find_binding(
-            other, 'res.partner', external_id='45',
-        )._kits_get_odoo_record()
-        self.assertNotEqual(other_partner, partner)
+        other_partner = self.env['kits.woo.customer.binding']._find(
+            other, external_id='45',
+        ).partner_id
+        self.assertEqual(other_partner, partner)
         self.assertFalse(other_partner.parent_id)
         self.assertEqual(other_partner.woo_company_name, 'Analytical Engines')
         self.assertFalse(self.env['res.partner'].search([
@@ -185,10 +184,11 @@ class TestWooDeletionAndSyncRules(WooConnectorCommon):
                 'payload': {'topic': 'customer.deleted', 'woo_id': 70, 'customer': {'id': 70}},
                 'state': 'pending',
             }))
-            self.assertIn('deleted remote', summary.lower())
-        self.assertEqual(binding.sync_state, 'deleted')
+            self.assertIn('kept', summary.lower())
+        self.assertFalse(binding.exists())
         self.assertTrue(partner.active)
-        self.assertEqual(other_binding.sync_state, 'synced')
+        self.assertTrue(other_binding.exists())
+        self.assertEqual(other_binding.partner_id, partner)
 
     def test_product_import_cost_and_stock_not_applied(self):
         api = MagicMock()
@@ -200,14 +200,14 @@ class TestWooDeletionAndSyncRules(WooConnectorCommon):
         )])
         with self._patch_api(api):
             self.instance._woo_import_products()
-        template = self.env['kits.connector.binding']._kits_find_binding(
-            self.instance, 'product.template', external_id='610',
-        )._kits_get_odoo_record()
+        template = self.env['kits.woo.product.binding']._find(
+            self.instance, external_id='610',
+        ).product_tmpl_id
         variant = template.product_variant_id
         self.assertEqual(variant.standard_price, 4.5)
         self.assertEqual(variant.qty_available, 0)
-        binding = self.env['kits.connector.binding']._kits_find_binding(
-            self.instance, 'product.product', external_id='610',
+        binding = self.env['kits.woo.variant.binding']._find(
+            self.instance, external_id='610',
         )
         self.assertFalse((binding.external_data or {}).get('variation_id'))
 
@@ -225,10 +225,11 @@ class TestWooDeletionAndSyncRules(WooConnectorCommon):
             self.instance._woo_import_products()
         template.invalidate_recordset()
         self.assertTrue(template.active)
-        binding = self.env['kits.connector.binding']._kits_find_binding(
-            self.instance, 'product.template', external_id='77',
+        binding = self.env['kits.woo.product.binding'].with_context(active_test=False)._find(
+            self.instance, external_id='77',
         )
         self.assertEqual(binding.sync_state, 'deleted')
+        self.assertFalse(binding.active)
         self.assertNotIn(self.instance, template.woo_instance_ids)
 
     def test_remote_delete_is_store_specific_and_idempotent(self):
@@ -268,13 +269,14 @@ class TestWooDeletionAndSyncRules(WooConnectorCommon):
             'payload': {'topic': 'product.deleted', 'woo_id': 80, 'product': {'id': 80}},
             'state': 'pending',
         }))
-        self.assertEqual(binding_a.sync_state, 'deleted')
+        self.assertEqual(binding_a.with_context(active_test=False).sync_state, 'deleted')
+        self.assertFalse(binding_a.with_context(active_test=False).active)
         self.assertEqual(binding_b.sync_state, 'synced')
         self.assertTrue(template.active)
         self.assertNotIn(self.instance, template.woo_instance_ids)
         self.assertIn(other, template.woo_instance_ids)
-        variant_binding = self.env['kits.connector.binding']._kits_find_binding(
-            self.instance, 'product.product', external_id='80',
+        variant_binding = self.env['kits.woo.variant.binding'].with_context(active_test=False)._find(
+            self.instance, external_id='80',
         )
         self.assertEqual(variant_binding.sync_state, 'deleted')
 
@@ -297,14 +299,15 @@ class TestWooDeletionAndSyncRules(WooConnectorCommon):
         api.delete_product.assert_not_called()
         api.update_product.assert_not_called()
         api.create_product.assert_not_called()
-        binding = self.env['kits.connector.binding']._kits_find_binding(
-            self.instance, 'product.template', external_id='81',
-        )
-        self.assertEqual(binding.sync_state, 'deleted_local')
+        self.assertFalse(self.env['kits.woo.product.binding'].with_context(active_test=False).search([
+            ('instance_id', '=', self.instance.id),
+            ('external_id', '=', '81'),
+        ]))
+        self.instance.woo_create_products = False
         api.get_products.return_value = iter([self._simple_payload(81, 'LOCAL-GONE')])
         with self._patch_api(api):
             summary = self.instance._woo_import_products()
-        self.assertIn('skipped=1', summary)
+        self.assertIn('failed=1', summary)
         self.assertFalse(self.env['product.template'].search([
             ('default_code', '=', 'LOCAL-GONE'),
             ('company_id', 'in', [False, self.company.id]),
@@ -489,7 +492,11 @@ class TestWooDeletionAndSyncRules(WooConnectorCommon):
         api.get_variations.return_value = iter([])
         with self._patch_api(api):
             self.instance._woo_process_product_webhook(job=fresh)
-        self.assertEqual(template.name, 'New Name')
+        self.assertEqual(template.name, 'Current Name')
+        self.assertEqual(
+            self.env['kits.woo.product.binding']._find(self.instance, external_id='84').title,
+            'New Name',
+        )
         self.assertEqual(template.product_variant_id.qty_available, 0)
 
     def test_explicit_export_recreate_is_single_and_repeated_export_updates(self):
