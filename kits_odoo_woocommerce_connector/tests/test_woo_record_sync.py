@@ -236,29 +236,21 @@ class TestWooRecordSyncAndStatus(WooConnectorCommon):
 
     def test_wizard_validation(self):
         Wizard = self.env['kits.woo.sync.wizard']
+        operations = [item[0] for item in Wizard._fields['operation'].selection]
+        self.assertNotIn('inventory', operations)
         with self.assertRaises(ValidationError):
             Wizard.create({
                 'instance_id': self.instance.id,
-                'direction': 'import',
-                'operation': 'inventory',
-                'import_mode': 'all',
-            })
-        with self.assertRaises(ValidationError):
-            Wizard.create({
-                'instance_id': self.instance.id,
-                'direction': 'import',
-                'operation': 'products',
-                'import_mode': 'ids',
-                'record_ids_text': '',
+                'operation': 'import_specific_products',
+                'product_ids_text': '',
             })
         wiz = Wizard.create({
             'instance_id': self.instance.id,
-            'direction': 'import',
-            'operation': 'products',
-            'import_mode': 'ids',
-            'record_ids_text': '10,20',
+            'operation': 'import_specific_products',
+            'product_ids_text': '10,20',
         })
-        with patch.object(type(self.instance), 'action_create_sync_job') as create_job:
+        with patch.object(type(self.instance), 'action_create_sync_job') as create_job, \
+                patch.object(type(self.instance), '_woo_open_jobs', return_value=True):
             create_job.return_value = self.env['kits.connector.sync.job']
             wiz.action_execute()
             create_job.assert_called()

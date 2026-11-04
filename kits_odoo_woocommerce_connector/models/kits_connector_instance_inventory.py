@@ -33,6 +33,22 @@ class KitsConnectorInstanceInventory(models.Model):
         payload = (job.payload if job else None) or {}
         product_ids = self._woo_parse_id_list(payload.get('product_ids'))
         expected_versions = payload.get('sync_versions') or {}
+        stock_from = payload.get('stock_from')
+        if stock_from:
+            moment = fields.Datetime.to_datetime(stock_from)
+            moved_ids = self.env['stock.move'].search([
+                ('state', '=', 'done'),
+                ('date', '>=', moment),
+                ('company_id', 'in', [False, self.company_id.id]),
+            ]).mapped('product_id').ids
+            if product_ids:
+                product_ids = [pid for pid in product_ids if pid in set(moved_ids)]
+            else:
+                product_ids = moved_ids
+            if not product_ids:
+                return (
+                    'Inventory export finished: updated=0, skipped=0, failed=0'
+                )
         force_full = bool(payload.get('full')) or not product_ids
 
         domain = [

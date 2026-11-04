@@ -23,20 +23,33 @@ class KitsConnectorInstanceOrder(models.Model):
         api = self._woo_api()
         payload = (job.payload if job else None) or {}
         specific_ids = self._woo_parse_id_list(payload.get('woo_ids'))
+        order_scope = payload.get('order_scope') or False
+        date_from = self._woo_parse_datetime(payload.get('date_from') or payload.get('after'))
+        date_to = self._woo_parse_datetime(payload.get('date_to') or payload.get('before'))
         statuses = [
             s.strip() for s in (self.woo_order_statuses or 'processing,completed').split(',')
             if s.strip()
         ]
+        if order_scope == 'unshipped':
+            status_param = 'pending,processing,on-hold'
+        elif order_scope == 'shipped':
+            status_param = 'completed'
+        elif order_scope == 'cancelled':
+            status_param = 'cancelled'
+        else:
+            status_param = ','.join(statuses) if statuses else 'processing,completed'
         params = {
-            'status': ','.join(statuses) if statuses else 'processing,completed',
+            'status': status_param,
             'orderby': 'date',
             'order': 'asc',
         }
-        after = payload.get('after')
-        if after:
-            params['after'] = str(after).replace(' ', 'T')
-        elif self.woo_last_order_sync and not specific_ids:
+        scoped = bool(order_scope) or bool(specific_ids)
+        if date_from:
+            params['after'] = fields.Datetime.to_string(date_from).replace(' ', 'T')
+        elif self.woo_last_order_sync and not scoped:
             params['after'] = fields.Datetime.to_string(self.woo_last_order_sync).replace(' ', 'T')
+        if date_to:
+            params['before'] = fields.Datetime.to_string(date_to).replace(' ', 'T')
 
         created = skipped = failed = retried = 0
         errors = []
@@ -44,7 +57,7 @@ class KitsConnectorInstanceOrder(models.Model):
 
         # 1) Retry previously failed orders by ID (independent of date watermark)
         #    Skipped when the job already targets an explicit ID list.
-        retry_ids = [] if specific_ids else list(self._woo_order_failure_ids())
+        retry_ids = [] if specific_ids or order_scope else list(self._woo_order_failure_ids())
         for failed_id in retry_ids:
             try:
                 woo_order = api.get_order(failed_id)
@@ -96,6 +109,11 @@ class KitsConnectorInstanceOrder(models.Model):
 
         for woo_order in order_iter:
             woo_id = woo_order.get('id')
+            if not specific_ids and not self._woo_order_matches_import(
+                woo_order, order_scope, date_from, date_to,
+            ):
+                skipped += 1
+                continue
             try:
                 result, order_date = self._woo_import_one_order(woo_order, job=job)
                 if result == 'created':
@@ -127,7 +145,7 @@ class KitsConnectorInstanceOrder(models.Model):
                 # Continue other orders; watermark still advances — failures retried by ID
                 continue
 
-        if not specific_ids:
+        if not scoped:
             if latest_date:
                 self.woo_last_order_sync = latest_date
             elif not self.woo_last_order_sync:
@@ -158,7 +176,18 @@ class KitsConnectorInstanceOrder(models.Model):
             return self._woo_handle_existing_order(existing, woo_order, order_date)
 
         if woo_status in ('cancelled', 'trash'):
-            # Do not create Odoo orders for cancelled remote orders
+            self._kits_log_operation(
+                operation='woo_import_orders',
+                status='success',
+                level='info',
+                message=self.env._(
+                    'Skipped WooCommerce order %(woo)s. It is %(status)s and has no '
+                    'linked Odoo sales order, so nothing was created or cancelled.',
+                    woo=woo_id,
+                    status=woo_status,
+                ),
+                job=job,
+            )
             return 'skipped', order_date
 
         warehouse = self._woo_get_warehouse()
@@ -337,26 +366,58 @@ class KitsConnectorInstanceOrder(models.Model):
             )
 
         if woo_status in ('cancelled', 'trash', 'failed'):
-            note = self.env._(
-                'WooCommerce order status is now "%(status)s". Odoo order was not overwritten.',
-                status=woo_status,
-            )
-            if order.state not in ('cancel', 'done'):
-                if order.state in ('draft', 'sent'):
-                    order.action_cancel()
-                    updates['woo_sync_conflict'] = note
-                elif order.state == 'sale' and not order.picking_ids.filtered(
-                    lambda p: p.state == 'done'
-                ):
-                    try:
-                        order.with_context(disable_cancel_warning=True).action_cancel()
-                        updates['woo_sync_conflict'] = note
-                    except Exception:  # noqa: BLE001
-                        updates['woo_sync_conflict'] = note
-                else:
-                    updates['woo_sync_conflict'] = note
+            block = self._woo_cancel_block_reason(order)
+            if block:
+                updates['woo_sync_conflict'] = block
+                self._kits_log_operation(
+                    operation='woo_import_orders',
+                    status='success',
+                    level='warning',
+                    message=block,
+                    details=f'sale.order,{order.id}',
+                )
+            elif order.state not in ('cancel', 'done'):
+                try:
+                    order.with_context(disable_cancel_warning=True).action_cancel()
+                    updates['woo_sync_conflict'] = False
+                    self._kits_log_operation(
+                        operation='woo_import_orders',
+                        status='success',
+                        level='info',
+                        message=self.env._(
+                            'Cancelled Odoo order %(order)s because WooCommerce order '
+                            '%(woo)s is %(status)s.',
+                            order=order.name,
+                            woo=woo_order.get('id'),
+                            status=woo_status,
+                        ),
+                        details=f'sale.order,{order.id}',
+                    )
+                except Exception as exc:  # noqa: BLE001
+                    updates['woo_sync_conflict'] = self.env._(
+                        'WooCommerce order %(woo)s is %(status)s. Odoo order %(order)s '
+                        'was not cancelled: %(error)s',
+                        woo=woo_order.get('id'),
+                        status=woo_status,
+                        order=order.name,
+                        error=exc,
+                    )
+                    self._kits_log_operation(
+                        operation='woo_import_orders',
+                        status='failure',
+                        level='warning',
+                        message=updates['woo_sync_conflict'],
+                        details=f'sale.order,{order.id}',
+                    )
             else:
-                updates.setdefault('woo_sync_conflict', note)
+                updates.setdefault('woo_sync_conflict', self.env._(
+                    'WooCommerce order %(woo)s is %(status)s. Odoo order %(order)s '
+                    'is already %(state)s.',
+                    woo=woo_order.get('id'),
+                    status=woo_status,
+                    order=order.name,
+                    state=order.state,
+                ))
 
         if updates:
             order.write(updates)
@@ -568,6 +629,259 @@ class KitsConnectorInstanceOrder(models.Model):
             'sale_ok': True,
         })
         return template.product_variant_id
+
+    def _woo_order_matches_import(self, woo_order, order_scope, date_from, date_to):
+        status = (woo_order.get('status') or '').lower()
+        if order_scope == 'unshipped' and status not in ('pending', 'processing', 'on-hold'):
+            return False
+        if order_scope == 'shipped' and status != 'completed':
+            return False
+        if order_scope == 'cancelled' and status != 'cancelled':
+            return False
+        moment = self._woo_parse_datetime(
+            woo_order.get('date_created_gmt') or woo_order.get('date_created')
+        )
+        if (date_from or date_to) and not moment:
+            return False
+        if date_from and moment < date_from:
+            return False
+        if date_to and moment > date_to:
+            return False
+        return True
+
+    def _woo_cancel_block_reason(self, order):
+        """Return why this Odoo order must not be cancelled, or False."""
+        self.ensure_one()
+        reasons = []
+        done = order.picking_ids.filtered(lambda picking: picking.state == 'done')
+        if done:
+            reasons.append(self.env._('a delivery is already done'))
+        invoices = order.invoice_ids.filtered(
+            lambda move: move.state != 'cancel' and move.move_type == 'out_invoice'
+        )
+        if invoices or order.invoice_status == 'invoiced':
+            reasons.append(self.env._('it already has an invoice'))
+        if not reasons:
+            return False
+        return self.env._(
+            'WooCommerce order %(woo)s was not used to cancel Odoo order %(order)s '
+            'because %(reason)s.',
+            woo=order.woo_order_id or '',
+            order=order.name,
+            reason=' and '.join(reasons),
+        )
+
+    def _woo_order_ready_to_complete(self, order):
+        """True when every outgoing delivery is done and at least one exists."""
+        self.ensure_one()
+        if not order.woo_order_id or order.state != 'sale':
+            return False
+        if (order.woo_order_status or '').lower() in (
+            'completed', 'cancelled', 'refunded', 'failed', 'trash',
+        ):
+            return False
+        outgoing = order.picking_ids.filtered(
+            lambda picking: picking.picking_type_id.code == 'outgoing'
+            and picking.state != 'cancel'
+        )
+        if not outgoing or any(picking.state != 'done' for picking in outgoing):
+            return False
+        return True
+
+    def _woo_export_shipments(self, job=None):
+        """Set linked WooCommerce orders to completed after Odoo delivery is done."""
+        self.ensure_one()
+        api = self._woo_api()
+        orders = self.env['sale.order'].search([
+            ('woo_instance_id', '=', self.id),
+            ('woo_order_id', '!=', False),
+            ('state', '=', 'sale'),
+            ('company_id', '=', self.company_id.id),
+        ])
+        updated = skipped = failed = 0
+        errors = []
+        for order in orders:
+            if not self._woo_order_ready_to_complete(order):
+                skipped += 1
+                continue
+            try:
+                remote = api.update_order(int(order.woo_order_id), {'status': 'completed'})
+                order.woo_order_status = (remote.get('status') or 'completed')
+                updated += 1
+                self._kits_log_operation(
+                    operation='woo_export_shipments',
+                    status='success',
+                    level='info',
+                    message=self.env._(
+                        'Set WooCommerce order %(woo)s to completed from %(order)s.',
+                        woo=order.woo_order_id,
+                        order=order.name,
+                    ),
+                    details=f'sale.order,{order.id}',
+                    job=job,
+                )
+            except Exception as exc:  # noqa: BLE001
+                failed += 1
+                errors.append(f'{order.name}: {exc}')
+                self._kits_log_operation(
+                    operation='woo_export_shipments',
+                    status='failure',
+                    level='error',
+                    message=str(exc),
+                    details=f'sale.order,{order.id}',
+                    job=job,
+                )
+        summary = (
+            f'Shipment export finished: updated={updated}, skipped={skipped}, failed={failed}'
+        )
+        if errors:
+            summary = f'{summary}\n' + '\n'.join(errors[:20])
+        return summary
+
+    def _woo_cancel_remote_order(self, order):
+        """Ask WooCommerce to cancel the linked order. Leave the Odoo order as it is."""
+        self.ensure_one()
+        order.ensure_one()
+        if not order.woo_order_id:
+            raise UserError(self.env._('This sales order is not linked to a WooCommerce order.'))
+        if (order.woo_order_status or '').lower() == 'cancelled':
+            return self._woo_notify(self.env._(
+                'WooCommerce order %(woo)s is already cancelled. The Odoo order was not changed.',
+                woo=order.woo_order_id,
+            ))
+        try:
+            remote = self._woo_api().update_order(int(order.woo_order_id), {'status': 'cancelled'})
+        except Exception as exc:  # noqa: BLE001
+            self._kits_log_operation(
+                operation='woo_cancel_order',
+                status='failure',
+                level='error',
+                message=self.env._(
+                    'WooCommerce did not cancel order %(woo)s: %(error)s',
+                    woo=order.woo_order_id,
+                    error=exc,
+                ),
+                details=f'sale.order,{order.id}',
+            )
+            raise UserError(self.env._(
+                'WooCommerce did not cancel order %(woo)s: %(error)s',
+                woo=order.woo_order_id,
+                error=exc,
+            )) from exc
+        order.woo_order_status = remote.get('status') or 'cancelled'
+        self._kits_log_operation(
+            operation='woo_cancel_order',
+            status='success',
+            level='info',
+            message=self.env._(
+                'Requested cancellation of WooCommerce order %(woo)s. Odoo order %(order)s was not cancelled.',
+                woo=order.woo_order_id,
+                order=order.name,
+            ),
+            details=f'sale.order,{order.id}',
+        )
+        return self._woo_notify(self.env._(
+            'WooCommerce order %(woo)s was set to %(status)s. Odoo order %(order)s was not cancelled.',
+            woo=order.woo_order_id,
+            status=order.woo_order_status,
+            order=order.name,
+        ))
+
+    def _woo_refundable_amount(self, order):
+        self.ensure_one()
+        done = self.env['kits.woo.refund'].search([
+            ('instance_id', '=', self.id),
+            ('sale_order_id', '=', order.id),
+            ('state', '=', 'done'),
+        ])
+        return max(float(order.amount_total or 0.0) - sum(done.mapped('amount')), 0.0)
+
+    def _woo_export_credit_note_refund(self, credit_note, order):
+        """Create one WooCommerce refund for this credit note. Do not create another credit note."""
+        self.ensure_one()
+        credit_note.ensure_one()
+        order.ensure_one()
+        if credit_note.move_type != 'out_refund':
+            raise UserError(self.env._('Only a customer credit note can be refunded in WooCommerce.'))
+        if credit_note.state == 'cancel':
+            raise UserError(self.env._('A cancelled credit note cannot be refunded in WooCommerce.'))
+        if not order.woo_order_id or order.woo_instance_id != self:
+            raise UserError(self.env._(
+                'Sales order %(order)s is not linked to this WooCommerce store.',
+                order=order.display_name,
+            ))
+        existing = self.env['kits.woo.refund'].search([
+            ('instance_id', '=', self.id),
+            ('credit_note_id', '=', credit_note.id),
+            ('state', 'in', ('done', 'pending')),
+        ], limit=1)
+        if existing:
+            raise UserError(self.env._(
+                'Credit note %(name)s is already linked to WooCommerce refund %(refund)s.',
+                name=credit_note.display_name,
+                refund=existing.woo_refund_id,
+            ))
+        amount = abs(float(credit_note.amount_total or 0.0))
+        if amount <= 0:
+            raise UserError(self.env._('The credit note amount must be greater than zero.'))
+        available = self._woo_refundable_amount(order)
+        if amount - available > 0.0001:
+            raise UserError(self.env._(
+                'Refund amount %(amount)s exceeds the remaining refundable amount %(available)s '
+                'on sales order %(order)s.',
+                amount=amount,
+                available=available,
+                order=order.display_name,
+            ))
+        reason = credit_note.ref or credit_note.payment_reference or credit_note.name or ''
+        try:
+            remote = self._woo_api().create_order_refund(int(order.woo_order_id), {
+                'amount': f'{amount:.2f}',
+                'reason': reason,
+                'api_refund': False,
+            })
+        except Exception as exc:  # noqa: BLE001
+            self._kits_log_operation(
+                operation='woo_export_refund',
+                status='failure',
+                level='error',
+                message=str(exc),
+                details=f'account.move,{credit_note.id}',
+            )
+            raise UserError(self.env._(
+                'WooCommerce did not create the refund: %(error)s',
+                error=exc,
+            )) from exc
+        refund_id = remote.get('id')
+        if not refund_id:
+            raise UserError(self.env._('WooCommerce did not return a refund id.'))
+        self.env['kits.woo.refund'].create({
+            'instance_id': self.id,
+            'sale_order_id': order.id,
+            'woo_order_id': str(order.woo_order_id),
+            'woo_refund_id': str(refund_id),
+            'amount': amount,
+            'currency_id': credit_note.currency_id.id or order.currency_id.id,
+            'state': 'done',
+            'credit_note_id': credit_note.id,
+            'woo_reason': reason,
+        })
+        self._kits_log_operation(
+            operation='woo_export_refund',
+            status='success',
+            level='info',
+            message=self.env._(
+                'Created WooCommerce refund %(refund)s for %(amount)s on order %(woo)s.',
+                refund=refund_id,
+                amount=amount,
+                woo=order.woo_order_id,
+            ),
+            details=f'account.move,{credit_note.id}',
+        )
+        return self._woo_notify(self.env._(
+            'WooCommerce refund %(refund)s was created. No additional credit note was created.',
+            refund=refund_id,
+        ))
 
     @staticmethod
     def _woo_parse_datetime(value):

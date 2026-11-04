@@ -206,11 +206,24 @@ class ConnectorHttpClient:
         return None
 
     @staticmethod
+    def _safe_url_for_log(url: str) -> str:
+        """Strip query credentials (OAuth/Basic tokens) before logging or raising."""
+        if not url:
+            return url
+        try:
+            from urllib.parse import urlsplit, urlunsplit
+            parts = urlsplit(url)
+            return urlunsplit((parts.scheme, parts.netloc, parts.path, '', ''))
+        except Exception:  # noqa: BLE001
+            return url.split('?', 1)[0]
+
+    @staticmethod
     def _raise_for_status(response: requests.Response) -> None:
         if response.ok:
             return
         body = ConnectorHttpClient.truncate_for_log(response.text)
-        message = f'HTTP {response.status_code} calling {response.url}'
+        safe_url = ConnectorHttpClient._safe_url_for_log(response.url)
+        message = f'HTTP {response.status_code} calling {safe_url}'
         if response.status_code in (401, 403):
             raise ConnectorAuthError(
                 message,

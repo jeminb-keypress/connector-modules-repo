@@ -8,3 +8,5 @@ from . import test_woo_order_sync
 from . import test_woo_record_sync
 from . import test_woo_deletion_rules
 from . import test_woo_separate_bindings
+from . import test_woo_operations
+from . import test_woo_wizard_all_operations

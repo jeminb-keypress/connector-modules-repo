@@ -276,9 +276,10 @@ class KitsConnectorInstanceCoupon(models.Model):
         coupons = self.env['kits.woo.coupon'].search(domain)
         created = updated = skipped = failed = 0
         errors = []
+        mode = payload.get('coupon_mode') or False
         for coupon in coupons:
             try:
-                result = self._woo_export_one_coupon(coupon, api)
+                result = self._woo_export_one_coupon(coupon, api, mode=mode)
                 if result == 'created':
                     created += 1
                 elif result == 'updated':
@@ -293,6 +294,14 @@ class KitsConnectorInstanceCoupon(models.Model):
                 )
                 if binding:
                     binding._kits_mark_error(str(exc))
+                self._kits_log_operation(
+                    operation='woo_export_coupons',
+                    status='failure',
+                    level='error',
+                    message=str(exc),
+                    details=f'kits.woo.coupon,{coupon.id}',
+                    job=job,
+                )
         self.woo_last_coupon_sync = fields.Datetime.now()
         summary = (
             f'Coupon export finished: created={created}, updated={updated}, '
@@ -425,14 +434,19 @@ class KitsConnectorInstanceCoupon(models.Model):
                 payload['email_restrictions'] = emails
         return payload
 
-    def _woo_export_one_coupon(self, coupon, api=None):
+    def _woo_export_one_coupon(self, coupon, api=None, mode=None):
         self.ensure_one()
         api = api or self._woo_api()
-        payload = self._woo_coupon_to_payload(coupon)
         binding = self._woo_binding()._kits_find_binding(
             self, 'kits.woo.coupon', odoo_record_id=coupon.id,
         )
-        if binding and binding.sync_state != 'deleted':
+        linked = binding and binding.sync_state != 'deleted'
+        if mode == 'export' and linked:
+            return 'skipped'
+        if mode == 'update' and not linked:
+            return 'skipped'
+        payload = self._woo_coupon_to_payload(coupon)
+        if linked:
             remote = api.update_coupon(int(binding.external_id), payload)
             self._woo_bind(
                 'kits.woo.coupon', coupon.id, remote.get('id') or binding.external_id,

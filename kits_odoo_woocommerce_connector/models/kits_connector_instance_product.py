@@ -47,6 +47,9 @@ class KitsConnectorInstanceProduct(models.Model):
             products_iter = api.get_products(**params)
 
         for woo_product in products_iter:
+            if self._woo_skip_product_import(woo_product, payload):
+                skipped += 1
+                continue
             try:
                 with self.env.cr.savepoint():
                     result = self._woo_import_one_product(woo_product, job=job)
@@ -120,6 +123,25 @@ class KitsConnectorInstanceProduct(models.Model):
                 )
                 continue
             yield remote
+
+    def _woo_skip_product_import(self, woo_product, payload):
+        """Honor Import Products modes without changing the match rules."""
+        self.ensure_one()
+        woo_id = woo_product.get('id') if isinstance(woo_product, dict) else False
+        if not woo_id:
+            return False
+        binding = self.env['kits.woo.product.binding']._find(self, external_id=str(woo_id))
+        if not binding:
+            return False
+        if payload.get('skip_existing'):
+            return True
+        if payload.get('product_mode') == 'new_and_updated':
+            remote = self._woo_parse_datetime(
+                woo_product.get('date_modified_gmt') or woo_product.get('date_modified')
+            )
+            if binding.store_write_date and remote and remote <= binding.store_write_date:
+                return True
+        return False
 
     def _woo_import_one_product(self, woo_product, job=None):
         """Match or create an Odoo product, then store Woo-only details on bindings.

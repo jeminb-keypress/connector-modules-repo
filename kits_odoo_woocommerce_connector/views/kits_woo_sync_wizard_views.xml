@@ -8,21 +8,31 @@
                 <group>
                     <field name="instance_id"/>
                     <field name="company_id" groups="base.group_multi_company"/>
-                    <field name="direction"/>
                     <field name="operation"/>
-                    <field name="import_mode"/>
-                    <field name="record_ids_text"
-                            invisible="import_mode != 'ids'"
-                            required="import_mode == 'ids'"
+                    <field name="product_import_mode" invisible="operation != 'import_products'"/>
+                    <field name="skip_existing" invisible="operation != 'import_products'"/>
+                    <field name="product_ids_text"
+                            invisible="operation != 'import_specific_products'"
+                            required="operation == 'import_specific_products'"
                             placeholder="111,222,333"/>
-                    <field name="modified_after"
-                            invisible="import_mode != 'date'"
-                            required="import_mode == 'date'"/>
+                    <field name="date_from"
+                            invisible="operation not in ('import_unshipped_orders', 'import_shipped_orders')"/>
+                    <field name="date_to"
+                            invisible="operation not in ('import_unshipped_orders', 'import_shipped_orders')"/>
+                    <field name="order_ids_text"
+                            invisible="operation != 'import_specific_orders'"
+                            required="operation == 'import_specific_orders'"
+                            placeholder="9001,9002"/>
+                    <field name="stock_from" invisible="operation != 'export_stock'"/>
+                    <field name="mapping_file" filename="mapping_filename"
+                            invisible="operation != 'map_products'"
+                            required="operation == 'map_products'"/>
+                    <field name="mapping_filename" invisible="1"/>
                 </group>
                 <footer>
                     <button name="action_execute"
                             type="object"
-                            string="Queue Sync"
+                            string="Run"
                             class="btn-primary"
                             groups="kits_odoo_base_connector.group_kits_connector_manager"/>
                     <button string="Cancel" special="cancel"/>

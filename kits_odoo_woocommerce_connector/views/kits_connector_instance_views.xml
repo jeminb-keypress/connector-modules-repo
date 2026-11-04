@@ -9,53 +9,12 @@
                 <button name="action_woo_open_sync_wizard"
                         type="object"
                         string="Sync Operation"
-                        class="btn-secondary"
-                        invisible="platform_type != 'woocommerce'"
-                        groups="kits_odoo_base_connector.group_kits_connector_manager"/>
-                <button name="action_woo_import_products"
-                        type="object"
-                        string="Import Products"
+                        class="btn-primary"
                         invisible="platform_type != 'woocommerce'"
                         groups="kits_odoo_base_connector.group_kits_connector_manager"/>
                 <button name="action_woo_export_products"
                         type="object"
                         string="Export Products"
-                        invisible="platform_type != 'woocommerce'"
-                        groups="kits_odoo_base_connector.group_kits_connector_manager"/>
-                <button name="action_woo_import_orders"
-                        type="object"
-                        string="Import Orders"
-                        class="btn-primary"
-                        invisible="platform_type != 'woocommerce'"
-                        groups="kits_odoo_base_connector.group_kits_connector_manager"/>
-                <button name="action_woo_import_customers"
-                        type="object"
-                        string="Import Customers"
-                        invisible="platform_type != 'woocommerce'"
-                        groups="kits_odoo_base_connector.group_kits_connector_manager"/>
-                <button name="action_woo_export_inventory"
-                        type="object"
-                        string="Export Inventory"
-                        invisible="platform_type != 'woocommerce'"
-                        groups="kits_odoo_base_connector.group_kits_connector_manager"/>
-                <button name="action_woo_import_categories"
-                        type="object"
-                        string="Import Categories"
-                        invisible="platform_type != 'woocommerce'"
-                        groups="kits_odoo_base_connector.group_kits_connector_manager"/>
-                <button name="action_woo_import_attributes"
-                        type="object"
-                        string="Import Attributes"
-                        invisible="platform_type != 'woocommerce'"
-                        groups="kits_odoo_base_connector.group_kits_connector_manager"/>
-                <button name="action_woo_import_coupons"
-                        type="object"
-                        string="Import Coupons"
-                        invisible="platform_type != 'woocommerce'"
-                        groups="kits_odoo_base_connector.group_kits_connector_manager"/>
-                <button name="action_woo_export_coupons"
-                        type="object"
-                        string="Export Coupons"
                         invisible="platform_type != 'woocommerce'"
                         groups="kits_odoo_base_connector.group_kits_connector_manager"/>
                 <button name="action_woo_register_customer_webhooks"
@@ -294,7 +253,7 @@
             </p>
             <p>
                 Configure the store URL, REST API consumer key/secret, warehouse, and pricelist.
-                Then use Import/Export actions or enable scheduled sync.
+                Then use Sync Operation, Export Products, or enable scheduled sync.
             </p>
         </field>
     </record>

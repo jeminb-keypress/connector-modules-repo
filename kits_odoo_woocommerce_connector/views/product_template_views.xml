@@ -16,6 +16,26 @@
                         <span class="o_stat_text">WooCommerce</span>
                     </div>
                 </button>
+                <button name="action_woo_publish"
+                        type="object"
+                        class="oe_stat_button"
+                        icon="published_with_changes"
+                        groups="kits_odoo_base_connector.group_kits_connector_manager">
+                    <div class="o_stat_info">
+                        <span class="o_stat_text">Publish on</span>
+                        <span class="o_stat_text">WooCommerce</span>
+                    </div>
+                </button>
+                <button name="action_woo_unpublish"
+                        type="object"
+                        class="oe_stat_button"
+                        icon="unpublished"
+                        groups="kits_odoo_base_connector.group_kits_connector_manager">
+                    <div class="o_stat_info">
+                        <span class="o_stat_text">Unpublish on</span>
+                        <span class="o_stat_text">WooCommerce</span>
+                    </div>
+                </button>
                 <button name="action_woo_import_from_store"
                         type="object"
                         class="oe_stat_button"
@@ -79,6 +99,30 @@
         <field name="code">
 if records:
     action = records.action_woo_export_to_store()
+        </field>
+    </record>
+
+    <record id="action_woo_publish_products_selected" model="ir.actions.server">
+        <field name="name">Publish on WooCommerce</field>
+        <field name="model_id" ref="product.model_product_template"/>
+        <field name="binding_model_id" ref="product.model_product_template"/>
+        <field name="binding_view_types">list</field>
+        <field name="state">code</field>
+        <field name="code">
+if records:
+    action = records.action_woo_publish()
+        </field>
+    </record>
+
+    <record id="action_woo_unpublish_products_selected" model="ir.actions.server">
+        <field name="name">Unpublish on WooCommerce</field>
+        <field name="model_id" ref="product.model_product_template"/>
+        <field name="binding_model_id" ref="product.model_product_template"/>
+        <field name="binding_view_types">list</field>
+        <field name="state">code</field>
+        <field name="code">
+if records:
+    action = records.action_woo_unpublish()
         </field>
     </record>
 

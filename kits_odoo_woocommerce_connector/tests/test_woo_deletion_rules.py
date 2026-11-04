@@ -4,7 +4,7 @@ import hashlib
 import hmac
 from unittest.mock import MagicMock, patch
 
-from odoo.exceptions import UserError, ValidationError
+from odoo.exceptions import UserError
 from odoo.tests import tagged
 
 from odoo.addons.kits_odoo_base_connector.services.exceptions import ConnectorAPIError
@@ -151,13 +151,11 @@ class TestWooDeletionAndSyncRules(WooConnectorCommon):
         with self.assertRaises(UserError):
             job._run_woo_export_customers()
         self.assertFalse(hasattr(self.env['res.partner'], 'action_woo_export_to_store'))
-        with self.assertRaises(ValidationError):
-            self.env['kits.woo.sync.wizard'].create({
-                'instance_id': self.instance.id,
-                'direction': 'export',
-                'operation': 'customers',
-                'import_mode': 'all',
-            })
+        operations = [
+            item[0] for item in self.env['kits.woo.sync.wizard']._fields['operation'].selection
+        ]
+        self.assertNotIn('export_customers', operations)
+        self.assertNotIn('customers', operations)
 
     def test_customer_delete_is_idempotent_and_store_specific(self):
         partner = self.env['res.partner'].create({

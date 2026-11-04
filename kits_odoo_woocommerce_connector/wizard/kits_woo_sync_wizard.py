@@ -20,45 +20,54 @@ class KitsWooSyncWizard(models.TransientModel):
         required=True,
         default=lambda self: self.env.company,
     )
-    direction = fields.Selection(
-        selection=[
-            ('import', 'WooCommerce → Odoo'),
-            ('export', 'Odoo → WooCommerce'),
-        ],
-        required=True,
-        default='import',
-    )
     operation = fields.Selection(
         selection=[
-            ('products', 'Products'),
-            ('customers', 'Customers'),
-            ('orders', 'Orders'),
-            ('inventory', 'Inventory'),
-            ('categories', 'Categories'),
-            ('tags', 'Tags'),
-            ('attributes', 'Attributes'),
-            ('coupons', 'Coupons'),
+            ('import_customers', 'Import Customers'),
+            ('import_products', 'Import Products'),
+            ('import_specific_products', 'Import Specific Products'),
+            ('import_unshipped_orders', 'Import Unshipped Orders'),
+            ('import_shipped_orders', 'Import Shipped Orders'),
+            ('import_cancelled_orders', 'Import Cancelled Orders'),
+            ('import_specific_orders', 'Import/Update Specific Orders'),
+            ('import_categories', 'Import Categories'),
+            ('import_tags', 'Import Tags'),
+            ('import_attributes', 'Import Attributes'),
+            ('import_coupons', 'Import Coupons'),
+            ('map_products', 'Map Products using CSV/Excel'),
+            ('export_shipment', 'Export Shipment Information / Update Order Status'),
+            ('export_stock', 'Export Stock'),
+            ('export_categories', 'Export Categories'),
+            ('update_categories', 'Update Categories'),
+            ('export_tags', 'Export Tags'),
+            ('update_tags', 'Update Tags'),
+            ('export_coupons', 'Export Coupons'),
+            ('update_coupons', 'Update Coupons'),
         ],
         required=True,
-        default='products',
+        default='import_customers',
     )
-    import_mode = fields.Selection(
+    product_import_mode = fields.Selection(
         selection=[
-            ('all', 'Import All / Bulk'),
-            ('ids', 'Specific IDs'),
-            ('date', 'Modified After Date'),
+            ('all', 'Import All'),
+            ('new_and_updated', 'Import New and Updated Only'),
         ],
-        string='Filter',
+        string='Import Mode',
         default='all',
-        required=True,
     )
-    record_ids_text = fields.Char(
-        string='Record IDs',
-        help='Comma-separated WooCommerce IDs (import) or Odoo product template IDs (export products).',
+    skip_existing = fields.Boolean(string='Do Not Update Existing Products')
+    product_ids_text = fields.Char(
+        string='WooCommerce Product IDs',
+        help='Comma-separated WooCommerce product ids.',
     )
-    modified_after = fields.Datetime(
-        string='Modified After',
+    order_ids_text = fields.Char(
+        string='WooCommerce Order IDs',
+        help='Comma-separated WooCommerce order ids.',
     )
+    date_from = fields.Datetime(string='Date From')
+    date_to = fields.Datetime(string='Date To')
+    stock_from = fields.Datetime(string='Export Stock From')
+    mapping_file = fields.Binary(string='Mapping File')
+    mapping_filename = fields.Char(string='Filename')
 
     @api.model
     def default_get(self, fields_list):
@@ -75,58 +84,37 @@ class KitsWooSyncWizard(models.TransientModel):
         if self.instance_id.company_id and self.instance_id.company_id != self.company_id:
             self.instance_id = False
 
-    @api.onchange('direction', 'operation')
-    def _onchange_direction_operation(self):
-        if self.direction == 'export' and self.operation == 'orders':
-            self.operation = 'products'
-        if self.direction == 'export' and self.operation == 'customers':
-            self.operation = 'products'
-        if self.direction == 'import' and self.operation == 'inventory':
-            self.operation = 'products'
-        if self.direction == 'export' and self.import_mode == 'date':
-            self.import_mode = 'all'
-
-    @api.constrains('direction', 'operation', 'import_mode', 'record_ids_text', 'modified_after')
-    def _check_wizard_values(self):
+    @api.constrains(
+        'operation', 'product_ids_text', 'order_ids_text', 'date_from', 'date_to',
+        'mapping_file', 'mapping_filename',
+    )
+    def _check_operation_values(self):
         for wiz in self:
-            if wiz.direction == 'export' and wiz.operation == 'orders':
-                raise ValidationError(self.env._('Order export is not supported.'))
-            if wiz.direction == 'export' and wiz.operation == 'customers':
-                raise ValidationError(self.env._(
-                    'Customer export is not supported. Import or Fetch instead.'
-                ))
-            if wiz.direction == 'import' and wiz.operation == 'inventory':
-                raise ValidationError(self.env._(
-                    'Inventory import from WooCommerce is not supported. '
-                    'Odoo remains the stock source of truth.'
-                ))
-            if wiz.direction == 'export' and wiz.operation in ('tags', 'attributes'):
-                raise ValidationError(self.env._(
-                    'Export for tags/attributes is not supported from this wizard yet. '
-                    'Use product export after importing attributes.'
-                ))
-            if wiz.import_mode == 'ids' and not (wiz.record_ids_text or '').strip():
-                raise ValidationError(self.env._('Enter at least one record ID.'))
-            if wiz.import_mode == 'date':
-                if wiz.direction != 'import':
-                    raise ValidationError(self.env._(
-                        'Date filter is only available for import operations.'
-                    ))
-                if wiz.operation not in ('products', 'orders', 'customers', 'coupons'):
-                    raise ValidationError(self.env._(
-                        'Date filter is not supported for this operation.'
-                    ))
-                if not wiz.modified_after:
-                    raise ValidationError(self.env._('Set the Modified After date.'))
+            if wiz.operation == 'import_specific_products' and not wiz._parse_ids(wiz.product_ids_text):
+                raise ValidationError(self.env._('Enter at least one WooCommerce product id.'))
+            if wiz.operation == 'import_specific_orders' and not wiz._parse_ids(wiz.order_ids_text):
+                raise ValidationError(self.env._('Enter at least one WooCommerce order id.'))
+            if wiz.date_from and wiz.date_to and wiz.date_to < wiz.date_from:
+                raise ValidationError(self.env._('Date To must be on or after Date From.'))
+            if wiz.operation == 'map_products':
+                if not wiz.mapping_file:
+                    raise ValidationError(self.env._('Upload a CSV or Excel mapping file.'))
+                name = (wiz.mapping_filename or '').lower()
+                if name and not name.endswith(('.csv', '.xlsx')):
+                    raise ValidationError(self.env._('Upload a .csv or .xlsx file.'))
 
     def action_execute(self):
         self.ensure_one()
         instance = self.instance_id
-        require_wh = self.operation in ('orders', 'inventory')
+        require_wh = self.operation in (
+            'import_unshipped_orders', 'import_shipped_orders', 'import_cancelled_orders',
+            'import_specific_orders', 'export_stock', 'export_shipment',
+        )
         instance._ensure_woo_ready(require_warehouse=require_wh)
+        if self.operation == 'map_products':
+            return instance._woo_map_products(self.mapping_file, self.mapping_filename)
 
         job_type, name, payload = self._prepare_job()
-        # Deduplicate identical pending bulk jobs for the same store/type/payload key
         existing = self.env['kits.connector.sync.job'].search([
             ('instance_id', '=', instance.id),
             ('job_type', '=', job_type),
@@ -134,133 +122,82 @@ class KitsWooSyncWizard(models.TransientModel):
         ], limit=20)
         for job in existing:
             if (job.payload or {}) == payload:
-                return instance._woo_notify(self.env._(
-                    'An identical sync job is already pending or running.'
+                return instance._woo_open_jobs(job, self.env._(
+                    'This operation is already pending or running for %(store)s.',
+                    store=instance.display_name,
                 ))
+        job = instance.action_create_sync_job(job_type, name=name, payload=payload)
+        return instance._woo_open_jobs(job, self.env._('Queued %(name)s.', name=name))
 
-        instance.action_create_sync_job(job_type, name=name, payload=payload)
-        return instance._woo_notify(self.env._(
-            'Queued %(name)s.',
-            name=name,
-        ))
-
-    def _parse_ids(self):
-        self.ensure_one()
-        return self.env['kits.connector.instance']._woo_parse_id_list(self.record_ids_text)
+    def _parse_ids(self, raw):
+        return self.env['kits.connector.instance']._woo_parse_id_list(raw)
 
     def _prepare_job(self):
         self.ensure_one()
         instance = self.instance_id
-        ids = self._parse_ids() if self.import_mode == 'ids' else []
-        modified = self.modified_after if self.import_mode == 'date' else False
+        operation = self.operation
+        label = dict(self._fields['operation']._description_selection(self.env)).get(operation, operation)
+        name = self.env._('WooCommerce: %(operation)s (%(store)s)', operation=label, store=instance.name)
 
-        if self.direction == 'import' and self.operation == 'products':
+        if operation == 'import_customers':
+            return 'woo_import_customers', name, {}
+        if operation == 'import_products':
             payload = {}
-            if ids:
-                payload['woo_ids'] = ids
-                payload['allow_recreate'] = True
-            if modified:
-                payload['modified_after'] = fields.Datetime.to_string(modified)
-            return (
-                'woo_import_products',
-                self.env._('WooCommerce: Import Products (%s)', instance.name),
-                payload,
-            )
-        if self.direction == 'export' and self.operation == 'products':
-            payload = {}
-            if ids:
-                payload['template_ids'] = ids
-                payload['allow_recreate'] = True
-            elif self.import_mode == 'all':
-                # Explicit bulk export of flagged products only
-                payload = {}
-            else:
-                raise UserError(self.env._('Provide Odoo product template IDs to export.'))
-            return (
-                'woo_export_products',
-                self.env._('WooCommerce: Export Products (%s)', instance.name),
-                payload,
-            )
-        if self.direction == 'import' and self.operation == 'customers':
-            payload = {}
-            if ids:
-                payload['woo_ids'] = ids
-            if modified:
-                payload['modified_after'] = fields.Datetime.to_string(modified)
-            return (
-                'woo_import_customers',
-                self.env._('WooCommerce: Import Customers (%s)', instance.name),
-                payload,
-            )
-        if self.direction == 'export' and self.operation == 'customers':
-            raise UserError(self.env._(
-                'WooCommerce customer export is not supported. '
-                'Use Import Customers or Fetch Customer instead.'
-            ))
-        if self.direction == 'import' and self.operation == 'orders':
-            payload = {}
-            if ids:
-                payload['woo_ids'] = ids
-            if modified:
-                payload['after'] = fields.Datetime.to_string(modified)
-            return (
-                'woo_import_orders',
-                self.env._('WooCommerce: Import Orders (%s)', instance.name),
-                payload,
-            )
-        if self.direction == 'export' and self.operation == 'inventory':
-            payload = {'full': True}
-            if ids:
-                payload = {'product_ids': ids, 'full': False}
-            return (
-                'woo_export_inventory',
-                self.env._('WooCommerce: Export Inventory (%s)', instance.name),
-                payload,
-            )
-        if self.direction == 'import' and self.operation == 'categories':
-            payload = {'woo_ids': ids} if ids else {}
-            return (
-                'woo_import_categories',
-                self.env._('WooCommerce: Import Categories (%s)', instance.name),
-                payload,
-            )
-        if self.direction == 'export' and self.operation == 'categories':
-            payload = {'category_ids': ids} if ids else {}
-            return (
-                'woo_export_categories',
-                self.env._('WooCommerce: Export Categories (%s)', instance.name),
-                payload,
-            )
-        if self.direction == 'import' and self.operation == 'tags':
-            payload = {'woo_ids': ids} if ids else {}
-            return (
-                'woo_import_tags',
-                self.env._('WooCommerce: Import Tags (%s)', instance.name),
-                payload,
-            )
-        if self.direction == 'import' and self.operation == 'attributes':
-            payload = {'woo_ids': ids} if ids else {}
-            return (
-                'woo_import_attributes',
-                self.env._('WooCommerce: Import Attributes (%s)', instance.name),
-                payload,
-            )
-        if self.direction == 'import' and self.operation == 'coupons':
-            payload = {}
-            if ids:
-                payload['woo_ids'] = ids
-            if modified:
-                payload['modified_after'] = fields.Datetime.to_string(modified)
-            return (
-                'woo_import_coupons',
-                self.env._('WooCommerce: Import Coupons (%s)', instance.name),
-                payload,
-            )
-        if self.direction == 'export' and self.operation == 'coupons':
-            payload = {'coupon_ids': ids} if ids else {}
-            return (
-                'woo_export_coupons',
-                self.env._('WooCommerce: Export Coupons (%s)', instance.name),
-                payload,
-            )
+            if self.product_import_mode == 'new_and_updated':
+                payload['product_mode'] = 'new_and_updated'
+            if self.skip_existing:
+                payload['skip_existing'] = True
+            return 'woo_import_products', name, payload
+        if operation == 'import_specific_products':
+            return 'woo_import_products', name, {
+                'woo_ids': self._parse_ids(self.product_ids_text),
+                'allow_recreate': True,
+            }
+        if operation == 'import_unshipped_orders':
+            return 'woo_import_orders', name, self._order_payload('unshipped')
+        if operation == 'import_shipped_orders':
+            return 'woo_import_orders', name, self._order_payload('shipped')
+        if operation == 'import_cancelled_orders':
+            return 'woo_import_orders', name, {'order_scope': 'cancelled'}
+        if operation == 'import_specific_orders':
+            return 'woo_import_orders', name, {
+                'order_scope': 'specific',
+                'woo_ids': self._parse_ids(self.order_ids_text),
+            }
+        if operation == 'import_categories':
+            return 'woo_import_categories', name, {}
+        if operation == 'import_tags':
+            return 'woo_import_tags', name, {}
+        if operation == 'import_attributes':
+            return 'woo_import_attributes', name, {}
+        if operation == 'import_coupons':
+            return 'woo_import_coupons', name, {}
+        if operation == 'export_shipment':
+            return 'woo_export_shipments', name, {}
+        if operation == 'export_stock':
+            payload = {'full': not bool(self.stock_from)}
+            if self.stock_from:
+                payload['stock_from'] = fields.Datetime.to_string(self.stock_from)
+            return 'woo_export_inventory', name, payload
+        if operation == 'export_categories':
+            return 'woo_export_categories', name, {'category_mode': 'export'}
+        if operation == 'update_categories':
+            return 'woo_export_categories', name, {'category_mode': 'update'}
+        if operation == 'export_tags':
+            return 'woo_export_tags', name, {'tag_mode': 'export'}
+        if operation == 'update_tags':
+            return 'woo_export_tags', name, {'tag_mode': 'update'}
+        if operation == 'export_coupons':
+            return 'woo_export_coupons', name, {'coupon_mode': 'export'}
+        if operation == 'update_coupons':
+            return 'woo_export_coupons', name, {'coupon_mode': 'update'}
         raise UserError(self.env._('Unsupported synchronization operation.'))
+
+    def _order_payload(self, scope):
+        self.ensure_one()
+        payload = {'order_scope': scope}
+        if self.date_from:
+            payload['date_from'] = fields.Datetime.to_string(self.date_from)
+        if self.date_to:
+            payload['date_to'] = fields.Datetime.to_string(self.date_to)
+        return payload

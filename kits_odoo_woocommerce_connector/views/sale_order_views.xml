@@ -6,6 +6,28 @@
         <field name="inherit_id" ref="sale.view_order_form"/>
         <field name="arch" type="xml">
             <xpath expr="//div[@name='button_box']" position="inside">
+                <button name="action_woo_export_shipment_status"
+                        type="object"
+                        class="oe_stat_button"
+                        icon="check_circle"
+                        invisible="not woo_order_id"
+                        groups="kits_odoo_base_connector.group_kits_connector_manager">
+                    <div class="o_stat_info">
+                        <span class="o_stat_text">Update Woo</span>
+                        <span class="o_stat_text">Status</span>
+                    </div>
+                </button>
+                <button name="action_woo_cancel_order"
+                        type="object"
+                        class="oe_stat_button"
+                        icon="cancel"
+                        invisible="not woo_order_id"
+                        groups="kits_odoo_base_connector.group_kits_connector_manager">
+                    <div class="o_stat_info">
+                        <span class="o_stat_text">Cancel in</span>
+                        <span class="o_stat_text">WooCommerce</span>
+                    </div>
+                </button>
                 <button name="action_woo_export_tracking"
                         type="object"
                         class="oe_stat_button"

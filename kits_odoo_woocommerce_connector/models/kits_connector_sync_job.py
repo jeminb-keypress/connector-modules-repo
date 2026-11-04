@@ -74,6 +74,16 @@ class KitsConnectorSyncJob(models.Model):
         self._woo_ensure_instance()
         return self.instance_id._woo_export_coupons(job=self)
 
+    def _run_woo_export_tags(self):
+        self.ensure_one()
+        self._woo_ensure_instance()
+        return self.instance_id._woo_export_tags(job=self)
+
+    def _run_woo_export_shipments(self):
+        self.ensure_one()
+        self._woo_ensure_instance()
+        return self.instance_id._woo_export_shipments(job=self)
+
     def _run_woo_webhook_product(self):
         self.ensure_one()
         self._woo_ensure_instance()

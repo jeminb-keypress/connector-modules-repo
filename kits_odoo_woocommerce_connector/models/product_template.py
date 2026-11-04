@@ -304,3 +304,92 @@ class ProductTemplate(models.Model):
                 skipped=len(missing),
             )
         return instance._woo_notify(message)
+
+    def action_woo_publish(self):
+        return self._woo_set_catalog_status('publish')
+
+    def action_woo_unpublish(self):
+        return self._woo_set_catalog_status('draft')
+
+    def _woo_set_catalog_status(self, status):
+        """Set the WooCommerce catalog status. Do not archive the Odoo product."""
+        self._check_woo_sync_access()
+        if status not in ('publish', 'draft'):
+            raise UserError(self.env._('Unsupported WooCommerce catalog status.'))
+        done = failed = 0
+        lines = []
+        for template in self:
+            instances = template.woo_instance_ids.filtered(
+                lambda store: store.active and store.platform_type == 'woocommerce'
+            )
+            if not instances:
+                failed += 1
+                lines.append(self.env._(
+                    '%(product)s: no WooCommerce store is selected.',
+                    product=template.display_name,
+                ))
+                continue
+            for instance in instances:
+                binding = instance._woo_record_binding(
+                    'product.template', odoo_record_id=template.id,
+                )
+                if not binding or not binding.active or binding.sync_state == 'deleted':
+                    failed += 1
+                    message = self.env._(
+                        '%(product)s: no active binding on %(store)s.',
+                        product=template.display_name,
+                        store=instance.display_name,
+                    )
+                    lines.append(message)
+                    instance._kits_log_operation(
+                        operation='woo_publish_product',
+                        status='failure',
+                        level='warning',
+                        message=message,
+                        details=f'product.template,{template.id}',
+                    )
+                    continue
+                try:
+                    instance._woo_api().update_product(int(binding.external_id), {'status': status})
+                    binding.published = status == 'publish'
+                    done += 1
+                    instance._kits_log_operation(
+                        operation='woo_publish_product',
+                        status='success',
+                        level='info',
+                        message=self.env._(
+                            '%(product)s is %(status)s on %(store)s. The Odoo product was not archived.',
+                            product=template.display_name,
+                            status=status,
+                            store=instance.display_name,
+                        ),
+                        details=f'product.template,{template.id}',
+                    )
+                except Exception as exc:  # noqa: BLE001
+                    failed += 1
+                    message = self.env._(
+                        '%(product)s on %(store)s: %(error)s',
+                        product=template.display_name,
+                        store=instance.display_name,
+                        error=exc,
+                    )
+                    lines.append(message)
+                    instance._kits_log_operation(
+                        operation='woo_publish_product',
+                        status='failure',
+                        level='error',
+                        message=message,
+                        details=f'product.template,{template.id}',
+                    )
+        summary = self.env._(
+            'WooCommerce catalog status %(status)s: updated %(done)s, failed %(failed)s.',
+            status=status,
+            done=done,
+            failed=failed,
+        )
+        if lines:
+            summary = summary + '\n' + '\n'.join(lines[:12])
+        notify_type = 'success' if done and not failed else ('warning' if done else 'danger')
+        return self.env['kits.connector.instance']._woo_notify(
+            summary, notify_type=notify_type, sticky=bool(failed),
+        )

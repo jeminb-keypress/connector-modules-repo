@@ -253,6 +253,11 @@ class WooCommerceAPI:
             'GET', f'/orders/{int(order_id)}/refunds/{int(refund_id)}',
         ) or {}
 
+    def create_order_refund(self, order_id: int, payload: dict) -> dict:
+        return self.request_json(
+            'POST', f'/orders/{int(order_id)}/refunds', json_body=payload,
+        ) or {}
+
     # ------------------------------------------------------------------
     # Coupons
     # ------------------------------------------------------------------

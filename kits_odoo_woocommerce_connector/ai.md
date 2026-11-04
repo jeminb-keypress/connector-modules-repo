@@ -8,7 +8,7 @@
 
 Odoo 20 WooCommerce connector that syncs products, customers (import-only), sales orders, coupons, and inventory for one or more WooCommerce stores. Built as a **separate** addon under `custome/20.0/kits_odoo_woocommerce_connector` (sibling of the base connector — not nested inside it).
 
-**Current version:** `20.0.1.13.4`. Depends on base `20.0.1.9.0`.
+**Current version:** `20.0.1.14.2`. Depends on base `20.0.1.9.1`.
 
 The WooCommerce app menu is owned by this module. The base module has no menu.
 
@@ -51,7 +51,9 @@ kits_odoo_woocommerce_connector
 | `woo_export_categories` | `_run_woo_export_categories` | Category export |
 | `woo_import_tags` | `_run_woo_import_tags` | Tag import |
 | `woo_import_attributes` | `_run_woo_import_attributes` | Attribute + term import with bindings |
-| `woo_import_coupons` / `woo_export_coupons` | `_run_woo_*_coupons` | Coupon CRUD sync |
+| `woo_import_coupons` / `woo_export_coupons` | `_run_woo_*_coupons` | Coupon import, export, and update |
+| `woo_export_tags` | `_run_woo_export_tags` | Tag export and update |
+| `woo_export_shipments` | `_run_woo_export_shipments` | Set Woo orders to completed after Odoo delivery |
 | `woo_webhook_product` / `order` / `coupon` | `_run_woo_webhook_*` | Non-customer webhooks |
 
 ### Menus
@@ -75,7 +77,7 @@ There is no generic Bindings menu and no delivery-order menu. Orders are `sale.o
 
 | Path | Responsibility |
 |------|----------------|
-| `__manifest__.py` | Version `20.0.1.13.4`. Depends: base connector, sale_management, sale_stock, stock, website_sale, delivery, payment, account |
+| `__manifest__.py` | Version `20.0.1.14.2`. Depends: base connector, sale_management, sale_stock, stock, website_sale, delivery, payment, account |
 | `services/woo_api.py` | WooCommerce REST facade (paginated lists, CRUD, 429 backoff) |
 | `models/kits_connector_instance.py` | Woo fields, auth hooks, connection test, enqueue actions, schedule cron |
 | `models/kits_connector_instance_image.py` | Main/gallery/variant image sync via `website_sale` `product.image`; export uploads via WP XML-RPC |
@@ -85,7 +87,9 @@ There is no generic Bindings menu and no delivery-order menu. Orders are `sale.o
 | `models/kits_connector_instance_product.py` | Product import/export + attributes/variants/tags/barcode |
 | `models/kits_connector_instance_customer.py` | Dedicated customer import (no export) + guest-safe order partner helper |
 | `models/kits_connector_instance_order.py` | Order import, failure retry list, lines, shipping/discount, confirm |
-| `models/kits_connector_instance_inventory.py` | Warehouse-scoped inventory export |
+| `models/kits_connector_instance_inventory.py` | Warehouse-scoped inventory export, including Export Stock From |
+| `models/kits_connector_instance_mapping.py` | CSV/Excel product mapping. Links existing products only. |
+| `models/account_move.py` | Refund in WooCommerce from a customer credit note |
 | `models/kits_connector_instance_webhook.py` | Customer webhook fields, HMAC verify, register/enqueue/process |
 | `controllers/woo_webhook.py` | Public HTTP endpoint `/kits_woo/webhook/<id>/customers` |
 | `models/kits_connector_sync_job.py` | `_run_woo_*` dispatch wrappers |
@@ -95,7 +99,7 @@ There is no generic Bindings menu and no delivery-order menu. Orders are `sale.o
 | `data/ir_cron_data.xml` | Auto-schedule cron (15 min) |
 | `views/kits_woocommerce_menus.xml` | WooCommerce app menu. See Menus above. |
 | `views/*` | Store form, bindings, coupons, refunds, orders, products, customers, sync wizard |
-| `wizard/kits_woo_sync_wizard.py` | Sync Operation. Company defaults to the current company so the store list is not empty. |
+| `wizard/kits_woo_sync_wizard.py` | One Sync Operation wizard with 20 operations (`20.0.1.14.1`). Company defaults to the current company. Mapping runs immediately. Every other operation queues a job and opens Sync Jobs. |
 | `wizard/kits_woo_customer_fetch.py` | Fetch one customer. Same company default as Sync Operation. |
 | `static/description/icon.png` | Module icon |
 | `ai.md` | This document |
@@ -131,6 +135,43 @@ Auth: HTTPS → Basic Auth; HTTP → OAuth 1.0a one-legged (`services/woo_oauth.
 
 ## 5. Workflows
 
+### Operations wizard
+
+WooCommerce → Sync Operations opens `kits.woo.sync.wizard`. The store is required. The form shows only the fields for the selected operation.
+
+| Operation | Fields shown | How it runs |
+|-----------|--------------|-------------|
+| Import Customers | none | Job `woo_import_customers` |
+| Import Products | Import All, or Import New and Updated Only; Do Not Update Existing Products | Job `woo_import_products` |
+| Import Specific Products | WooCommerce product ids | Job `woo_import_products` |
+| Import Unshipped Orders | Date From, Date To | Job `woo_import_orders`. Statuses `pending`, `processing`, `on-hold` |
+| Import Shipped Orders | Date From, Date To | Job `woo_import_orders`. Status `completed` |
+| Import Cancelled Orders | none | Job `woo_import_orders`. Status `cancelled` |
+| Import/Update Specific Orders | WooCommerce order ids | Job `woo_import_orders` |
+| Import Categories | none | Job `woo_import_categories` |
+| Import Tags | none | Job `woo_import_tags` |
+| Import Attributes | none | Job `woo_import_attributes` |
+| Import Coupons | none | Job `woo_import_coupons` |
+| Map Products using CSV/Excel | mapping file | Immediate. No job |
+| Export Shipment Information / Update Order Status | none | Job `woo_export_shipments` |
+| Export Stock | Export Stock From | Job `woo_export_inventory` |
+| Export Categories | none | Job `woo_export_categories`, `category_mode=export` |
+| Update Categories | none | Job `woo_export_categories`, `category_mode=update` |
+| Export Tags | none | Job `woo_export_tags`, `tag_mode=export` |
+| Update Tags | none | Job `woo_export_tags`, `tag_mode=update` |
+| Export Coupons | none | Job `woo_export_coupons`, `coupon_mode=export` |
+| Update Coupons | none | Job `woo_export_coupons`, `coupon_mode=update` |
+
+Import stock is not in the list. Product export stays on the product form and the product Action menu.
+
+A queued operation opens WooCommerce → Sync Jobs for that job. If the same store, job type, and payload are already pending or running, that job is opened and a second job is not created. Failed jobs use the base retry limit and backoff. Mapping, publish, unpublish, remote cancel, tracking export, the single-order status button, and the credit-note refund run immediately and show a notification.
+
+### Record buttons
+
+- Product form and product list: Export to WooCommerce, Update from WooCommerce, Publish on WooCommerce, Unpublish on WooCommerce. Publish and unpublish change the WooCommerce status on each selected store. They do not archive the Odoo product.
+- Sales order: Update Woo Status, Cancel in WooCommerce, Export Tracking. Cancel in WooCommerce does not cancel the Odoo order. Export Tracking writes the tracking meta and a customer note. It does not change the WooCommerce status.
+- Customer credit note: Refund in WooCommerce. One remote refund per credit note. The amount cannot exceed the order total minus refunds already marked done. No second credit note is created. The WooCommerce call uses `api_refund` false.
+
 ### Products import
 1. Paginate `GET /products`. `trash` and a remote delete archive this store’s product binding and its variant bindings (`active=False`, `sync_state=deleted`, `exists_in_store=False`) and drop only this store from Connected Instances. The Odoo template and variants stay.
 2. Validate every variant before writing. Each variant needs its own SKU. A repeated SKU inside the same Woo product fails the product. A variable product with no option values fails. The product import uses a savepoint, so a failed product leaves no partial binding.
@@ -139,6 +180,11 @@ Auth: HTTPS → Basic Auth; HTTP → OAuth 1.0a one-legged (`services/woo_oauth.
 5. When nothing matches, create the Odoo product only if `woo_create_products` is on. Otherwise fail that product and log the reason. Deleting the Odoo product removes its bindings and does not leave a tombstone, so a later import can create again when automatic creation is on.
 6. Store title, short and long descriptions, type, published/draft, taxable, virtual, categories, tags, image URLs, and store dates stay on `kits.woo.product.binding`. Variant title, SKU, URL, manage-stock, quantity rule, and variant images stay on `kits.woo.variant.binding`.
 7. Images (if `woo_import_images`): main → `image_1920`; extras → `product_template_image_ids` (`website_sale` required); variant → `image_variant_1920`; hash skip; **videos out of scope**
+8. Import All updates matched products. Import New and Updated Only skips a linked product whose WooCommerce modification date is not newer than `store_write_date`. Do Not Update Existing Products skips every product that already has a binding for this store. Specific ids import only those WooCommerce products. Automatic creation and the match order above still apply.
+
+### Product mapping
+
+CSV and xlsx. The header needs a WooCommerce product id (`woo_id` or `woo_product_id`) and either `odoo_id` or `sku`. Every row is validated before any binding is written. Missing products, invalid ids, duplicate rows, ambiguous SKUs, and a Woo id or Odoo product already linked to something else are reported and not applied. Mapping does not create or delete products. A single-variant product also gets a variant binding with the same Woo id. A product with several variants is linked on the template only. The binding belongs to the store selected on the wizard.
 
 ### Products export
 1. Templates that list this store on `woo_instance_ids` (drives computed `woo_sync_to_store`), or explicit `template_ids` (no silent mass fallback)
@@ -161,21 +207,32 @@ Auth: HTTPS → Basic Auth; HTTP → OAuth 1.0a one-legged (`services/woo_oauth.
 10. `kits_connected_instance_ids` and `woo_is_store_customer` are computed from customer bindings. The Customers menu searches `woo_is_store_customer` with Odoo 20’s operator `in` and value `[True]`. `_search_woo_is_store_customer` treats that as true. Treating an unknown operator as “not a customer” inverts the list.
 
 ### Orders import
-1. Retry `woo_order_import_failures` by ID first, then paginate with `after=woo_last_order_sync`
-2. Skip if `sale.order` binding already exists (idempotent); record cancel/refund conflicts
-3. Partner via `_woo_partner_from_order`; map lines (binding/SKU); fail unmapped unless allowed
-4. Shipping + discount + fee lines; tax-inclusive Woo clears Odoo line taxes
-5. Bind order **before** `action_confirm()`; never invent invoices/payments/stock moves
-6. A confirmed order’s delivery is a standard stock picking. Open it from the order’s Delivery button, or from Inventory → Operations → Deliveries. WooCommerce has no delivery menu.
+1. Retry `woo_order_import_failures` by ID first, then paginate with `after=woo_last_order_sync`. A scoped wizard job does not retry the failure list and does not move the watermark.
+2. Unshipped uses Woo statuses `pending`, `processing`, and `on-hold`. Shipped uses `completed`. Cancelled uses `cancelled`. Specific orders use the given Woo ids. Date From and Date To apply to shipped and unshipped imports.
+3. An order that is already linked is updated in place: status, payment metadata, safe cancellation, and refunds. Confirmed lines are not rewritten.
+4. A cancelled Woo order does not create an Odoo order. If one is already linked, it is cancelled only when it has no done delivery and no invoice. Otherwise the skip reason is logged on the order and in Logs.
+5. Partner via `_woo_partner_from_order`; map lines (binding/SKU); fail unmapped unless allowed
+6. Shipping + discount + fee lines; tax-inclusive Woo clears Odoo line taxes
+7. Bind order **before** `action_confirm()`; never invent invoices/payments/stock moves
+8. A confirmed order’s delivery is a standard stock picking. Open it from the order’s Delivery button, or from Inventory → Operations → Deliveries. WooCommerce has no delivery menu.
+
+### Shipment status
+Export Shipment Information sets the WooCommerce order status to `completed` when the Odoo order is confirmed, every outgoing delivery is done, and the Woo status is not already completed, cancelled, refunded, failed, or trash. It does not write a tracking number. Export Tracking remains a separate button and only writes meta plus a customer note.
 
 ### Inventory export
 1. Active `kits.woo.variant.binding` rows for this store whose state is not `deleted`. Woo stock is never imported.
 2. Quantity comes from the variant binding rule: `odoo` uses `free_qty`, `fixed` uses `qty_sync_value`, `percentage` uses `free_qty * qty_sync_value / 100`. The warehouse context is the store warehouse. A job carrying an older `sync_version` is skipped.
-3. `PUT` uses the variant external id. A variation is updated when its external id differs from the parent product id. Never `POST` a new product. HTTP 404 archives the binding and stops recovery retries.
-4. Stock-move completion enqueues each store independently. One store’s enqueue error does not stop the others.
+3. Export Stock From limits the job to variants that have a done stock move on or after that date.
+4. `PUT` uses the variant external id. A variation is updated when its external id differs from the parent product id. Never `POST` a new product. HTTP 404 archives the binding and stops recovery retries.
+5. Stock-move completion enqueues each store independently. One store’s enqueue error does not stop the others.
+
+### Categories, tags, and coupons
+
+Import reuses the store binding for the same external id. Category export creates categories that are not yet linked and keeps the parent before the child. Category update only writes categories that already have a binding. Tag export creates a missing WooCommerce tag, or reuses one remote tag with the same name when exactly one exists. Tag update only writes linked tags. Coupon export creates coupons that are not yet linked. Coupon update only writes linked coupons. Unsupported coupon restrictions still block the export.
 
 ### Monitoring / retries
 - WooCommerce → Sync Jobs and WooCommerce → Logs. The base module has no menu.
+- After Queue/Run on a background operation, Sync Jobs opens on that job.
 - Failed jobs: reset/enqueue/run from the job form (retry limits + backoff)
 
 ---
@@ -221,10 +278,17 @@ Auth: HTTPS → Basic Auth; HTTP → OAuth 1.0a one-legged (`services/woo_oauth.
 | Inventory export | **Done** (manual bulk + event-driven + cron recovery) |
 | Manual + scheduled jobs | **Done** |
 | Record-level Push/Pull (products) | **Done** |
-| Instance Sync Operation wizard | **Done** (all / IDs / date filters) |
+| Operations wizard, 20 operations | **Done** (`20.0.1.14.1`). Import stock is not an operation. |
+| Product mapping CSV/Excel | **Done**. Links existing products for the selected store. Accepts Odoo 20 `BinaryValue` uploads. |
+| Publish / unpublish | **Done**. WooCommerce status only. Odoo `active` is unchanged. |
+| Cancel order in WooCommerce | **Done**. Does not cancel the Odoo sales order. |
+| Refund from Odoo credit note | **Done**. One WooCommerce refund per credit note. |
+| Shipment status export | **Done**. Sets WooCommerce to completed. Separate from tracking export. |
+| Tag export / update | **Done** |
+| Category and coupon export / update | **Done**. Separate create and update modes. |
 | Per-instance sync status | **Done** on product and variant bindings (`sync_state`). Customer bindings have no sync state. Orders, coupons, categories, tags, attributes, and refunds still use the generic binding. |
 | Bindings / logs / retries | **Done**. Logs and jobs use the base models through WooCommerce menus. Customer, product, and variant bindings have their own menus. |
-| Mocked TransactionCase tests (`kits_woo`) | **Done** (0 failed, 0 errors of 83 tests on `odoo20-connectors-woo-tests`, 2026-11-02) |
+| Mocked TransactionCase tests (`kits_woo`) | **Done** (0 failed, 0 errors of 101 tests on `odoo20-connectors-woo-tests`, 2026-11-03; includes wizard matrix for all 20 operations) |
 | Live Woo E2E (products/customers/orders/images) | **Done** (see `LIVE_TEST_REPORT.md`) |
 | Realtime push on every Odoo write | **Not in scope** (marks Not Synced; export via job/action) |
 | Product gallery videos | **Not in scope** |
@@ -267,7 +331,9 @@ Auth: HTTPS → Basic Auth; HTTP → OAuth 1.0a one-legged (`services/woo_oauth.
 - Variant matching on import can miss exotic attribute option naming mismatches.
 - Tax mapping is minimal (uses Odoo product/fiscal defaults; Woo tax lines not fully mirrored).
 - Coupon/fee lines beyond `discount_total` are not fully modeled.
-- Customer export intentionally unsupported; Sync wizard Export+Customers raises.
+- Customer export is not an operation. Stock import is not an operation.
+- A product with several variants can be mapped to a WooCommerce product id. The file does not assign variation ids.
+- A WooCommerce refund from a credit note is recorded with `api_refund` false, so the payment gateway is not charged again.
 - Deleting an Odoo variant then exporting does **not** remove the Woo variation (orphan on Woo).
 - Not every edge case has a dedicated test; see changelog testing notes.
 - Image change detection still hash-based; partial gallery races can leave an extra `website_sale` row (pre-existing).
@@ -280,7 +346,7 @@ Auth: HTTPS → Basic Auth; HTTP → OAuth 1.0a one-legged (`services/woo_oauth.
 - An archived remote product is skipped by export and stock jobs. A later import can find the inactive binding and reactivate it for the same external id.
 - Bulk/scheduled product export does not recreate a remotely deleted product. Only an explicit selected export (`allow_recreate`) does, and only after the old id 404s.
 - Stale webhook protection compares `date_modified` / `date_modified_gmt` when both sides have one. Events without timestamps are not treated as stale.
-- The automated suite was last run at `20.0.1.13.0`. Menu and wizard changes `20.0.1.13.1` through `20.0.1.13.4` were checked in the browser on `odoo20-connectors` and were not part of that suite.
+- The automated suite for `20.0.1.14.0` ran on `odoo20-connectors-woo-tests` (0 failed, 0 errors of 90 tests). The browser database `odoo20-connectors` was last upgraded through `20.0.1.13.4` and still needs this upgrade before the new wizard appears there.
 - Sync Operation and Fetch Customer set `company_id` to the current company in `default_get`. An empty company hides every store that belongs to a company, because `check_company` then keeps only records with no company.
 
 ### Pending
@@ -303,7 +369,7 @@ Auth: HTTPS → Basic Auth; HTTP → OAuth 1.0a one-legged (`services/woo_oauth.
 | Import via `odoo.addons.kits_odoo_woocommerce_connector` | **Passed** |
 | Live DB install / upgrade | **Passed** on `odoo20-connectors` through `20.0.1.13.4` |
 | Live Woo API + browser sync | **Passed** 2026-10-29 for product/stock/wizard/UI. Menus, the customer list, the store dropdown, and Refunds under Sale were checked in the browser on 2026-11-02. |
-| Automated `kits_woo` | **0 failed, 0 error(s) of 83 tests** on `odoo20-connectors-woo-tests` (2026-11-02, module `20.0.1.13.0`). Versions `20.0.1.13.1` through `20.0.1.13.4` were not re-run in that suite. |
+| Automated `kits_woo` | **0 failed, 0 error(s) of 101 tests** on `odoo20-connectors-woo-tests` (2026-11-03, module `20.0.1.14.1`). Stats line counted 133 tests. |
 
 ---
 
@@ -1133,3 +1199,100 @@ The Refunds menu is a child of Sale, after Customer Bindings. It is no longer a 
 Docs only. No code change and no version bump.
 
 The living sections now match the code: current menu tree, no generic Bindings menu, customer search operator `in` / `[True]`, product match through an existing product binding, Sync Operation and Fetch Customer company default, and deliveries as stock pickings with no WooCommerce menu. The validation table records the live upgrade through `20.0.1.13.4` and keeps the automated result at `20.0.1.13.0`.
+
+### 2026-11-03 — Remaining sync operations
+
+**Version:** `20.0.1.14.0`. Base module code was not changed.
+
+**Wizard** (`kits.woo.sync.wizard`)
+
+The store is always required. Only the fields for the selected operation are shown.
+
+| Operation | Extra fields | Execution |
+|-----------|--------------|-----------|
+| Import Customers | none | queued `woo_import_customers` |
+| Import Products | Import All or New and Updated Only, Do Not Update Existing | queued `woo_import_products` |
+| Import Specific Products | WooCommerce product ids | queued `woo_import_products` |
+| Import Unshipped Orders | Date From, Date To | queued `woo_import_orders`, statuses pending/processing/on-hold |
+| Import Shipped Orders | Date From, Date To | queued `woo_import_orders`, status completed |
+| Import Cancelled Orders | none | queued `woo_import_orders`, status cancelled |
+| Import/Update Specific Orders | WooCommerce order ids | queued `woo_import_orders` |
+| Import Categories / Tags / Attributes / Coupons | none | existing import jobs |
+| Map Products using CSV/Excel | file | immediate, no job |
+| Export Shipment Information / Update Order Status | none | queued `woo_export_shipments` |
+| Export Stock | Export Stock From | queued `woo_export_inventory` |
+| Export Categories / Update Categories | none | `woo_export_categories` with `category_mode` |
+| Export Tags / Update Tags | none | `woo_export_tags` with `tag_mode` |
+| Export Coupons / Update Coupons | none | `woo_export_coupons` with `coupon_mode` |
+
+Import stock is not offered. Product export stays on the product form and the product list.
+
+A queued run opens WooCommerce → Sync Jobs for that job. The same store, job type, and payload already pending or running opens that job and does not create another one. Failed jobs still use the base retry and backoff.
+
+**Direct actions**
+
+- Product form and list: Publish on WooCommerce, Unpublish on WooCommerce. The Odoo product stays active. Each selected store is logged.
+- Sales order: Update Woo Status, and Cancel in WooCommerce. Cancellation does not cancel the Odoo order. Tracking export is unchanged and does not change the Woo status.
+- Customer credit note: Refund in WooCommerce. One Woo refund per credit note. The amount cannot exceed the order total minus refunds already marked done. No second credit note is created.
+
+**Mapping file**
+
+Header needs `woo_id` or `woo_product_id`, and `odoo_id` or `sku`. CSV and xlsx are accepted. Rows are validated before any binding is written. Missing products, bad ids, duplicate rows, ambiguous SKUs, and conflicting bindings are reported. Products are not created or deleted. A single-variant product also gets a variant binding with the same Woo id. A multi-variant product is linked at the template only.
+
+**Tests (executed)**
+
+- Database `odoo20-connectors-woo-tests`, `--test-tags=/kits_odoo_woocommerce_connector`, no live WooCommerce calls:
+  **0 failed, 0 error(s) of 90 tests** (2026-11-03).
+- The module stats line in the same run counted 120 tests. The result line is 90 tests, 0 failed, 0 errors.
+- Living sections 3, 5, 8, 10, and 11 describe this release. The historical changelog above is unchanged.
+
+### 2026-11-03 — Wizard operations matrix testing (`20.0.1.14.1`)
+
+**Version:** Woo `20.0.1.14.1`, base `20.0.1.9.1`.
+
+**Bugs fixed during testing**
+
+1. Product mapping through the Sync Operation wizard failed on Odoo 20 because Binary fields expose `BinaryValue` (raw bytes) while `_woo_parse_product_map` always base64-decoded. Fixed in `models/kits_connector_instance_mapping.py` (`_woo_mapping_file_bytes`).
+2. HTTP error messages from `ConnectorHttpClient` included OAuth query strings (`oauth_consumer_key`, signature). Fixed in base `services/http_client.py` (`_safe_url_for_log`). Live DB still needs a restart/upgrade to pick up base `20.0.1.9.1`.
+
+**Automated**
+
+- Added `tests/test_woo_wizard_all_operations.py` covering all 20 wizard operations (payloads, validation, mocked import/export edge cases, mapping Binary upload, OAuth URL redaction).
+- Suite on `odoo20-connectors-woo-tests`: **0 failed, 0 error(s) of 101 tests**.
+
+**Live API (`odoo20-connectors` + `http://localhost/wordpress`, store id 1)**
+
+Connection test passed. Wizard exposed 20 operations. Queued and ran jobs:
+
+| Op | Job result |
+|----|------------|
+| Import Customers | done — reused=22 |
+| Import Specific Products (111) | done — updated=1 |
+| Import Products (new/updated + skip existing) | done — skipped=29, failed=19 (existing SKU/data quality issues on store catalog) |
+| Import Categories / Tags / Attributes / Coupons | done |
+| Import Unshipped Orders | done — created=2, failed=1 (unmapped SKU) |
+| Import Shipped / Cancelled | done |
+| Import Specific Orders (999999) | done — failed=1 HTTP 404 (expected) |
+| Export Stock | done — updated=31 |
+| Export/Update Categories, Tags, Coupons | done |
+| Export Shipment | done — skipped=2 |
+| Map Products (wizard Binary path) | **Blocked** on live until server reloads `20.0.1.14.1` |
+
+**Files**
+
+- `models/kits_connector_instance_mapping.py`
+- `tests/test_woo_wizard_all_operations.py`
+- `tests/__init__.py`
+- `__manifest__.py`
+- `ai.md`
+- base: `services/http_client.py`, `__manifest__.py`, `ai.md`
+
+### 2026-11-04 — Slim store form header buttons (`20.0.1.14.2`)
+
+**Version:** `20.0.1.14.2`.
+
+Removed store-form header buttons that duplicate Sync Operation: Import Products, Import Orders, Import Customers, Export Inventory, Import Categories, Import Attributes, Import Coupons, Export Coupons.
+
+Kept: Sync Operation, Export Products (not in the wizard), and the four webhook register/unregister buttons. Payment/shipping/tax fetch buttons on the map tabs are unchanged.
+
+**Files:** `views/kits_connector_instance_views.xml`, `__manifest__.py`, `ai.md`.

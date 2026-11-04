@@ -5,7 +5,7 @@ import hmac
 import json
 from unittest.mock import MagicMock, patch
 
-from odoo.exceptions import UserError, ValidationError
+from odoo.exceptions import UserError
 from odoo.tests import tagged
 from odoo.tests.common import HttpCase
 
@@ -243,23 +243,18 @@ class TestWooCatalogAndCoupon(WooConnectorCommon):
         self.assertTrue(coupon.exists())
 
     def test_wizard_blocks_inventory_import_and_supports_coupons(self):
-        with self.assertRaises(ValidationError):
-            self.env['kits.woo.sync.wizard'].create({
-                'instance_id': self.instance.id,
-                'direction': 'import',
-                'operation': 'inventory',
-                'import_mode': 'all',
-            })
+        operations = [
+            item[0] for item in self.env['kits.woo.sync.wizard']._fields['operation'].selection
+        ]
+        self.assertNotIn('inventory', operations)
+        self.assertNotIn('import_stock', operations)
         wiz2 = self.env['kits.woo.sync.wizard'].create({
             'instance_id': self.instance.id,
-            'direction': 'import',
-            'operation': 'coupons',
-            'import_mode': 'ids',
-            'record_ids_text': '1,2',
+            'operation': 'import_coupons',
         })
         job_type, _name, payload = wiz2._prepare_job()
         self.assertEqual(job_type, 'woo_import_coupons')
-        self.assertEqual(payload.get('woo_ids'), [1, 2])
+        self.assertEqual(payload, {})
 
     def test_multi_instance_coupon_isolation(self):
         other = self.env['kits.connector.instance'].create({

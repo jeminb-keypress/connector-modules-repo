@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 {
     'name': 'Kits Odoo WooCommerce Connector',
-    'version': '20.0.1.13.4',
+    'version': '20.0.1.14.2',
     'category': 'Sales/Sales',
     'summary': 'WooCommerce store sync for products, customers, orders, coupons, and inventory',
     'description': """
@@ -42,6 +42,7 @@ Features:
         'views/kits_woo_coupon_views.xml',
         'views/kits_woo_refund_views.xml',
         'views/sale_order_views.xml',
+        'views/account_move_views.xml',
         'views/product_template_views.xml',
         'views/res_partner_views.xml',
         'views/kits_woo_sync_wizard_views.xml',

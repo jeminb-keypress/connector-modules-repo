@@ -176,11 +176,12 @@ class KitsConnectorInstanceCatalog(models.Model):
 
         # Parents first
         categories = categories.sorted(key=lambda c: (c.parent_path or '', c.id))
+        mode = payload.get('category_mode') or False
         created = updated = skipped = failed = 0
         errors = []
         for category in categories:
             try:
-                result = self._woo_export_one_category(category, api)
+                result = self._woo_export_one_category(category, api, mode=mode)
                 if result == 'created':
                     created += 1
                 elif result == 'updated':
@@ -190,6 +191,14 @@ class KitsConnectorInstanceCatalog(models.Model):
             except Exception as exc:  # noqa: BLE001
                 failed += 1
                 errors.append(f'Category {category.display_name}: {exc}')
+                self._kits_log_operation(
+                    operation='woo_export_categories',
+                    status='failure',
+                    level='error',
+                    message=str(exc),
+                    details=f'product.category,{category.id}',
+                    job=job,
+                )
         summary = (
             f'Category export finished: created={created}, updated={updated}, '
             f'skipped={skipped}, failed={failed}'
@@ -198,11 +207,19 @@ class KitsConnectorInstanceCatalog(models.Model):
             summary = f'{summary}\n' + '\n'.join(errors[:20])
         return summary
 
-    def _woo_export_one_category(self, category, api=None):
+    def _woo_export_one_category(self, category, api=None, mode=None):
         self.ensure_one()
         api = api or self._woo_api()
         if not category.name:
             raise UserError(self.env._('Category name is required before export.'))
+        binding = self._woo_binding()._kits_find_binding(
+            self, 'product.category', odoo_record_id=category.id,
+        )
+        linked = binding and binding.sync_state != 'deleted'
+        if mode == 'export' and linked:
+            return 'skipped'
+        if mode == 'update' and not linked:
+            return 'skipped'
         parent_woo_id = 0
         if category.parent_id:
             parent_binding = self._woo_binding()._kits_find_binding(
@@ -223,13 +240,12 @@ class KitsConnectorInstanceCatalog(models.Model):
             'name': category.name,
             'parent': parent_woo_id,
         }
-        binding = self._woo_binding()._kits_find_binding(
-            self, 'product.category', odoo_record_id=category.id,
-        )
-        if binding and binding.sync_state != 'deleted':
+        if linked:
             remote = api.update_category(int(binding.external_id), payload)
             self._woo_bind('product.category', category.id, remote.get('id') or binding.external_id)
             return 'updated'
+        if mode == 'update':
+            return 'skipped'
         remote = api.create_category(payload)
         if not remote.get('id'):
             raise UserError(self.env._('WooCommerce did not return a category id.'))
@@ -413,4 +429,101 @@ class KitsConnectorInstanceCatalog(models.Model):
             'attribute_id': woo_attribute_id,
             'term_id': term_id,
         })
+        return 'created'
+
+    # -------------------------------------------------------------------------
+    # Tag export
+    # -------------------------------------------------------------------------
+
+    def _woo_export_tags(self, job=None):
+        self.ensure_one()
+        if 'product.tag' not in self.env:
+            raise UserError(self.env._('product.tag is not available in this database.'))
+        api = self._woo_api()
+        payload = (job.payload if job else None) or {}
+        mode = payload.get('tag_mode') or 'export'
+        tag_ids = self._woo_parse_id_list(payload.get('tag_ids'))
+        if tag_ids:
+            tags = self.env['product.tag'].browse(tag_ids).exists()
+        elif mode == 'update':
+            bindings = self._woo_binding().search([
+                ('instance_id', '=', self.id),
+                ('odoo_model', '=', 'product.tag'),
+                ('active', '=', True),
+            ])
+            tags = self.env['product.tag'].browse(bindings.mapped('odoo_record_id')).exists()
+        else:
+            tags = self.env['product.tag'].search([])
+        created = updated = skipped = failed = 0
+        errors = []
+        for tag in tags:
+            try:
+                result = self._woo_export_one_tag(tag, api, mode=mode)
+                if result == 'created':
+                    created += 1
+                elif result == 'updated':
+                    updated += 1
+                else:
+                    skipped += 1
+            except Exception as exc:  # noqa: BLE001
+                failed += 1
+                errors.append(f'{tag.display_name}: {exc}')
+                self._kits_log_operation(
+                    operation='woo_export_tags',
+                    status='failure',
+                    level='error',
+                    message=str(exc),
+                    details=f'product.tag,{tag.id}',
+                    job=job,
+                )
+        summary = (
+            f'Tag export finished: created={created}, updated={updated}, '
+            f'skipped={skipped}, failed={failed}'
+        )
+        if errors:
+            summary = f'{summary}\n' + '\n'.join(errors[:20])
+        return summary
+
+    def _woo_export_one_tag(self, tag, api=None, mode=None):
+        self.ensure_one()
+        api = api or self._woo_api()
+        name = (tag.name or '').strip()
+        if not name:
+            raise UserError(self.env._('Tag name is required before export.'))
+        binding = self._woo_binding()._kits_find_binding(
+            self, 'product.tag', odoo_record_id=tag.id,
+        )
+        linked = binding and binding.sync_state != 'deleted'
+        if mode == 'export' and linked:
+            return 'skipped'
+        if mode == 'update' and not linked:
+            return 'skipped'
+        if linked:
+            remote = api.update_tag(int(binding.external_id), {'name': name})
+            self._woo_bind('product.tag', tag.id, remote.get('id') or binding.external_id)
+            return 'updated'
+        matches = [
+            row for row in api.get_tags(search=name, per_page=20)
+            if (row.get('name') or '').strip().lower() == name.lower()
+        ]
+        if len(matches) > 1:
+            raise UserError(self.env._(
+                'WooCommerce has more than one tag named "%(name)s".',
+                name=name,
+            ))
+        if len(matches) == 1:
+            remote_id = matches[0]['id']
+            taken = self._woo_find_odoo('product.tag', remote_id)
+            if taken and taken != tag:
+                raise UserError(self.env._(
+                    'WooCommerce tag %(id)s is already linked to %(other)s.',
+                    id=remote_id,
+                    other=taken.display_name,
+                ))
+            self._woo_bind('product.tag', tag.id, remote_id)
+            return 'updated'
+        remote = api.create_tag({'name': name})
+        if not remote.get('id'):
+            raise UserError(self.env._('WooCommerce did not return a tag id.'))
+        self._woo_bind('product.tag', tag.id, remote['id'])
         return 'created'

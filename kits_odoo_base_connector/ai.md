@@ -10,7 +10,7 @@ Reusable Odoo 20 integration foundation for marketplace/ERP connectors. Inspired
 
 This module provides **shared infrastructure only**. It does **not** implement WooCommerce/Shopify/Magento/Amazon/QuickBooks business sync or platform APIs.
 
-**Current version:** `20.0.1.9.0`. No app menu. Platform modules own their menus.
+**Current version:** `20.0.1.9.1`. No app menu. Platform modules own their menus and their operation wizards. WooCommerce `20.0.1.14.1` keeps its 20-operation wizard, shipment export, tag export, product mapping, publish/unpublish, remote cancel, and credit-note refund in that module.
 
 ### Planned dependent modules
 
@@ -498,8 +498,22 @@ WooCommerce customers, product templates, and product variants no longer use thi
 
 No base Python, view, security, or migration file was changed for this split.
 
+### 2026-11-03 — WooCommerce operations stay in the Woo module
+
+**Version:** base stays `20.0.1.9.0`. WooCommerce connector `20.0.1.14.0`.
+
+The 20-operation wizard, shipment status, tag export, product mapping, publish/unpublish, remote cancel, and credit-note refund are implemented in `kits_odoo_woocommerce_connector`. They use the existing job, log, and binding helpers. No base Python, view, security, or migration file was changed.
+
 ### 2026-11-02 — Handover document reconciled with 20.0.1.9.0
 
 Docs only. No code change and no version bump.
 
 The living sections now say this module has no app menu, that WooCommerce customers, templates, and variants use their own binding models, and that the 2026-10-27 PostgreSQL outage is historical. Later upgrades on `odoo20-connectors` are recorded in the validation table.
+
+### 2026-11-03 — Redact OAuth query strings from HTTP errors (`20.0.1.9.1`)
+
+**Version:** `20.0.1.9.1`.
+
+`ConnectorHttpClient._raise_for_status` logged `response.url`, which for WooCommerce HTTP OAuth includes `oauth_consumer_key` and `oauth_signature`. `_safe_url_for_log` now strips the query string from error messages. Response body truncation is unchanged.
+
+**Files:** `services/http_client.py`, `__manifest__.py`, `ai.md`.

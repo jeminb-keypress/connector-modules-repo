@@ -533,17 +533,28 @@ class KitsConnectorInstance(models.Model):
             limit=1,
         )
 
-    def _woo_notify(self, message):
+    def _woo_notify(self, message, *, notify_type='success', sticky=False):
         return {
             'type': 'ir.actions.client',
             'tag': 'display_notification',
             'params': {
                 'title': self.env._('WooCommerce Connector'),
                 'message': message,
-                'type': 'success',
-                'sticky': False,
+                'type': notify_type,
+                'sticky': sticky,
             },
         }
+
+    def _woo_open_jobs(self, jobs, message):
+        """Open the WooCommerce sync-job list for the jobs just scheduled."""
+        self.ensure_one()
+        action = self.env['ir.actions.act_window']._for_xml_id(
+            'kits_odoo_woocommerce_connector.kits_woo_sync_job_action'
+        )
+        action['name'] = message
+        action['domain'] = [('id', 'in', jobs.ids)]
+        action['context'] = {'create': False}
+        return action
 
     # -------------------------------------------------------------------------
     # Shared helpers
@@ -619,10 +630,14 @@ class KitsConnectorInstance(models.Model):
             'sync_error': False,
             'sync_date': fields.Datetime.now(),
             'title': data.get('title') or template.name,
-            'product_type': data.get('type') if data.get('type') in (
-                'simple', 'variable', 'grouped', 'external', 'bundle',
-            ) else 'simple',
         }
+        product_type = data.get('type') if data.get('type') in (
+            'simple', 'variable', 'grouped', 'external', 'bundle',
+        ) else False
+        if product_type:
+            vals['product_type'] = product_type
+        elif not binding:
+            vals['product_type'] = 'simple'
         if binding:
             vals['sync_version'] = binding.sync_version + 1
             if external_data is not None:
