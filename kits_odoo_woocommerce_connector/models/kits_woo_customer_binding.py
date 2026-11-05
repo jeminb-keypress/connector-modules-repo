@@ -59,6 +59,12 @@ class KitsWooCustomerBinding(models.Model):
     )
     sync_error = fields.Text(copy=False)
     sync_date = fields.Datetime(default=fields.Datetime.now)
+    remote_modified_at = fields.Datetime(
+        string='Remote Modified At',
+        help='Last successfully applied WooCommerce date_modified for this customer.',
+        copy=False,
+        index=True,
+    )
     deleted_remotely_at = fields.Datetime(
         string='Deleted Remotely At',
         readonly=True,
@@ -114,7 +120,7 @@ class KitsWooCustomerBinding(models.Model):
         return self.with_context(active_test=False).search(domain, limit=1)
 
     @api.model
-    def _bind(self, instance, partner_id, external_id):
+    def _bind(self, instance, partner_id, external_id, *, remote_modified_at=False):
         if not instance or not partner_id or not external_id:
             raise UserError(self.env._(
                 'Store, contact, and external customer id are required.'
@@ -143,29 +149,37 @@ class KitsWooCustomerBinding(models.Model):
                 'sync_date': fields.Datetime.now(),
                 'deleted_remotely_at': False,
             }
+            if remote_modified_at:
+                vals['remote_modified_at'] = remote_modified_at
             binding.write(vals)
             return binding
-        return self.create({
+        vals = {
             'instance_id': instance.id,
             'company_id': instance.company_id.id,
             'partner_id': partner_id,
             'external_id': external_id,
             'sync_state': 'synced',
             'sync_date': fields.Datetime.now(),
-        })
+        }
+        if remote_modified_at:
+            vals['remote_modified_at'] = remote_modified_at
+        return self.create(vals)
 
     def _kits_get_odoo_record(self):
         self.ensure_one()
         return self.partner_id.exists()
 
-    def _kits_mark_synced(self):
-        self.write({
+    def _kits_mark_synced(self, *, remote_modified_at=False):
+        vals = {
             'active': True,
             'sync_state': 'synced',
             'sync_error': False,
             'sync_date': fields.Datetime.now(),
             'deleted_remotely_at': False,
-        })
+        }
+        if remote_modified_at:
+            vals['remote_modified_at'] = remote_modified_at
+        self.write(vals)
         return True
 
     def _kits_mark_error(self, message):

@@ -304,6 +304,7 @@ class TestWooCustomerWebhookHttp(HttpCase):
         url = f'/kits_woo/webhook/{self.instance.id}/customers'
         payload = {
             'id': 880,
+            'role': 'customer',
             'email': 'http-hook@example.com',
             'first_name': 'Http',
             'last_name': 'Hook',

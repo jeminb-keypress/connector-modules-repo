@@ -218,6 +218,7 @@ class TestWooWizardAllOperations(WooConnectorCommon):
         api = MagicMock()
         api.get_customers.return_value = iter([{
             'id': 44,
+            'role': 'customer',
             'email': 'keep@example.com',
             'first_name': 'Changed',
             'last_name': 'Person',
@@ -231,6 +232,7 @@ class TestWooWizardAllOperations(WooConnectorCommon):
             },
         }, {
             'id': 45,
+            'role': 'customer',
             'email': 'noname@example.com',
             'first_name': '',
             'last_name': '',

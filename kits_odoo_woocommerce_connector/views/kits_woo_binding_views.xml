@@ -10,6 +10,7 @@
                 <field name="instance_id"/>
                 <field name="sync_state" widget="badge"/>
                 <field name="sync_date" optional="hide"/>
+                <field name="remote_modified_at" optional="hide"/>
                 <field name="deleted_remotely_at" optional="hide"/>
                 <field name="company_id" groups="base.group_multi_company" optional="hide"/>
             </list>
@@ -32,6 +33,7 @@
                             <field name="company_id" groups="base.group_multi_company"/>
                             <field name="sync_state"/>
                             <field name="sync_date"/>
+                            <field name="remote_modified_at"/>
                             <field name="deleted_remotely_at"/>
                             <field name="active"/>
                         </group>
@@ -56,6 +58,10 @@
                 <filter name="filter_archived" string="Archived" domain="[('active', '=', False)]"/>
                 <filter name="filter_deleted_remotely" string="Deleted Remotely"
                        domain="[('sync_state', '=', 'deleted_remotely')]"/>
+                <filter name="filter_error" string="Error"
+                       domain="[('sync_state', '=', 'error')]"/>
+                <filter name="filter_manual_review" string="Manual Review"
+                       domain="[('sync_state', '=', 'manual_review')]"/>
                 <group>
                     <filter name="group_store" string="Store" context="{'group_by': 'instance_id'}"/>
                     <filter name="group_sync" string="Sync Status" context="{'group_by': 'sync_state'}"/>

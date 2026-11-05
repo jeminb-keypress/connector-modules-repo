@@ -4,6 +4,12 @@
 Bulk import and webhooks enqueue here. Matching and partner writes run in the
 waiting-list processor, triggered by cron (5 min), manual action, sync jobs, or
 when 50 eligible pending rows accumulate.
+
+Processing rules:
+- At most ``WAITING_PROCESS_BATCH`` (50) rows per process call.
+- Failed rows auto-retry until ``max_attempts`` (3), then ``manual``.
+- Ambiguous email matches go to ``manual`` immediately (no auto-retry).
+- Rows in ``processing`` are locked; enqueue must not reset them to pending.
 """
 
 import logging
@@ -170,8 +176,46 @@ class KitsWooCustomerWaiting(models.Model):
         event_ts = event_timestamp or self._parse_event_timestamp(payload)
         preview_name, preview_email = self._preview_from_payload(payload)
 
-        # Lock existing open rows for this key
-        open_states = ('pending', 'processing', 'manual', 'failed')
+        # Never interrupt a row that is already being processed.
+        processing = self.sudo().search([
+            ('instance_id', '=', instance.id),
+            ('external_id', '=', external_id),
+            ('state', '=', 'processing'),
+        ], order='id desc', limit=1)
+        if processing:
+            if (
+                processing.event_timestamp
+                and event_ts
+                and event_ts < processing.event_timestamp
+                and event_type != 'delete'
+            ):
+                return processing
+            # Queue a follow-up pending row; do not reset processing → pending.
+            row = self.sudo().create({
+                'instance_id': instance.id,
+                'company_id': instance.company_id.id,
+                'external_id': external_id,
+                'payload': payload,
+                'customer_name': preview_name,
+                'customer_email': preview_email,
+                'source': source,
+                'event_type': event_type,
+                'state': 'pending',
+                'event_timestamp': event_ts,
+                'delivery_id': delivery_id or False,
+                'body_hash': body_hash or False,
+            })
+            if process_delete_now and event_type == 'delete':
+                # Delete must wait until the in-flight row finishes; leave pending.
+                if trigger_batch:
+                    self._maybe_trigger_batch(instance)
+                return row
+            if trigger_batch:
+                self._maybe_trigger_batch(instance)
+            return row
+
+        # Lock existing open (non-processing) rows for this key
+        open_states = ('pending', 'manual', 'failed')
         existing = self.sudo().search([
             ('instance_id', '=', instance.id),
             ('external_id', '=', external_id),
@@ -237,6 +281,16 @@ class KitsWooCustomerWaiting(models.Model):
         ])
 
     @api.model
+    def _retryable_failed_domain(self, instance=None):
+        domain = [
+            ('state', '=', 'failed'),
+            ('attempt_count', '<', WAITING_MAX_ATTEMPTS),
+        ]
+        if instance:
+            domain.insert(0, ('instance_id', '=', instance.id))
+        return domain
+
+    @api.model
     def _maybe_trigger_batch(self, instance):
         if self._pending_count(instance) < WAITING_BATCH_TRIGGER:
             return False
@@ -266,17 +320,24 @@ class KitsWooCustomerWaiting(models.Model):
 
     @api.model
     def _cron_process_customer_waiting(self):
-        """Five-minute cron: enqueue a process job per store with pending rows."""
+        """Five-minute cron: enqueue a process job per store with work to do."""
         Waiting = self.sudo()
-        instances = Waiting.read_group(
+        instance_ids = set()
+        for group in Waiting.read_group(
             [('state', '=', 'pending')],
             ['instance_id'],
             ['instance_id'],
-        )
-        for group in instances:
-            instance_id = group['instance_id'][0] if group.get('instance_id') else False
-            if not instance_id:
-                continue
+        ):
+            if group.get('instance_id'):
+                instance_ids.add(group['instance_id'][0])
+        for group in Waiting.read_group(
+            self._retryable_failed_domain(),
+            ['instance_id'],
+            ['instance_id'],
+        ):
+            if group.get('instance_id'):
+                instance_ids.add(group['instance_id'][0])
+        for instance_id in instance_ids:
             instance = self.env['kits.connector.instance'].browse(instance_id)
             if instance.exists() and instance.active:
                 self._enqueue_process_job(instance, reason='cron')
@@ -301,6 +362,7 @@ class KitsWooCustomerWaiting(models.Model):
                 'last_error': False,
                 'processed_at': False,
             })
+        self.flush_recordset()
         return self._process_entries()
 
     def action_open_partner(self):
@@ -327,28 +389,69 @@ class KitsWooCustomerWaiting(models.Model):
 
     @api.model
     def _process_pending_for_instance(self, instance, limit=WAITING_PROCESS_BATCH, job=None):
-        rows = self.sudo().search([
+        limit = min(int(limit or WAITING_PROCESS_BATCH), WAITING_PROCESS_BATCH)
+        self.env['kits.woo.customer.waiting'].flush_model()
+        # Claim by SQL so concurrent workers cannot process the same row twice.
+        self.env.cr.execute(
+            """
+            SELECT id FROM kits_woo_customer_waiting
+            WHERE instance_id = %s
+              AND (
+                state = 'pending'
+                OR (state = 'failed' AND attempt_count < %s)
+              )
+            ORDER BY event_timestamp ASC NULLS FIRST, id ASC
+            LIMIT %s
+            FOR UPDATE SKIP LOCKED
+            """,
+            (instance.id, WAITING_MAX_ATTEMPTS, limit),
+        )
+        ids = [row[0] for row in self.env.cr.fetchall()]
+        rows = self.sudo().browse(ids)
+        summary = rows._process_entries(job=job)
+        # Keep draining via cron/jobs when more work remains.
+        remaining = self.sudo().search_count([
             ('instance_id', '=', instance.id),
+            '|',
             ('state', '=', 'pending'),
-        ], order='event_timestamp asc, id asc', limit=limit)
-        return rows._process_entries(job=job)
+            '&',
+            ('state', '=', 'failed'),
+            ('attempt_count', '<', WAITING_MAX_ATTEMPTS),
+        ])
+        if remaining:
+            self._enqueue_process_job(instance, reason='continue')
+        return summary
+
+    def _claim_row(self, job=None):
+        """Atomically claim this row for processing. Returns empty if already claimed."""
+        self.ensure_one()
+        # Ensure ORM writes (retry resets, enqueue) are visible to the SQL claim.
+        self.flush_recordset()
+        self.env.cr.execute(
+            """
+            UPDATE kits_woo_customer_waiting
+               SET state = 'processing',
+                   processing_job_id = %s,
+                   attempt_count = attempt_count + 1
+             WHERE id = %s
+               AND state IN ('pending', 'failed', 'manual')
+         RETURNING id
+            """,
+            (job.id if job else None, self.id),
+        )
+        claimed = self.env.cr.fetchone()
+        if not claimed:
+            return self.browse()
+        self.invalidate_recordset()
+        return self
 
     def _process_entries(self, job=None):
         """Process waiting rows with concurrency protection via state flip."""
         done = failed = skipped = manual = 0
         for row in self:
-            # Claim the row
-            claimed = self.sudo().search([
-                ('id', '=', row.id),
-                ('state', 'in', ('pending', 'failed', 'manual')),
-            ], limit=1)
+            claimed = row._claim_row(job=job)
             if not claimed:
                 continue
-            claimed.write({
-                'state': 'processing',
-                'processing_job_id': job.id if job else False,
-                'attempt_count': claimed.attempt_count + 1,
-            })
             try:
                 result = claimed._apply_one()
             except Exception as exc:  # noqa: BLE001
@@ -357,6 +460,7 @@ class KitsWooCustomerWaiting(models.Model):
                     claimed.external_id, claimed.instance_id.id,
                 )
                 claimed._mark_attempt_failure(str(exc))
+                claimed._sync_binding_state_after_failure()
                 if claimed.state == 'manual':
                     manual += 1
                 else:
@@ -391,6 +495,19 @@ class KitsWooCustomerWaiting(models.Model):
                 'processed_at': fields.Datetime.now(),
             })
 
+    def _sync_binding_state_after_failure(self):
+        """Mirror waiting-list failures onto the customer binding when one exists."""
+        self.ensure_one()
+        binding = self.env['kits.woo.customer.binding']._find(
+            self.instance_id, external_id=self.external_id,
+        )
+        if not binding:
+            return
+        if self.state == 'manual':
+            binding._kits_mark_manual_review(self.last_error)
+        elif self.state == 'failed':
+            binding._kits_mark_error(self.last_error)
+
     def _apply_one(self):
         self.ensure_one()
         instance = self.instance_id
@@ -414,8 +531,28 @@ class KitsWooCustomerWaiting(models.Model):
         payload = dict(self.payload or {})
         if not payload.get('id'):
             payload['id'] = int(self.external_id)
+
+        # Ignore older events once a newer remote modification is on the binding.
+        binding = self.env['kits.woo.customer.binding']._find(
+            instance, external_id=self.external_id,
+        )
+        if instance._woo_payload_is_stale(binding, payload):
+            self.write({
+                'state': 'skipped',
+                'last_error': self.env._(
+                    'Skipped older WooCommerce customer event for %(id)s.',
+                    id=self.external_id,
+                ),
+                'processed_at': fields.Datetime.now(),
+            })
+            return 'skipped'
+
         result = instance._woo_import_one_customer(payload)
         if result == 'ambiguous':
+            if binding:
+                binding._kits_mark_manual_review(self.env._(
+                    'Multiple Odoo contacts share this email. Manual review required.'
+                ))
             self.write({
                 'state': 'manual',
                 'last_error': self.env._(
@@ -433,7 +570,6 @@ class KitsWooCustomerWaiting(models.Model):
             return 'skipped'
 
         partner = instance._woo_find_odoo('res.partner', payload.get('id') or self.external_id)
-        # Active binding only — deleted_remotely bindings stay inactive
         binding = self.env['kits.woo.customer.binding']._find(
             instance, external_id=self.external_id,
         )

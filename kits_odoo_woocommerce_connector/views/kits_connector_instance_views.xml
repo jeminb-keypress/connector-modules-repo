@@ -153,9 +153,7 @@
                             <field name="woo_webhook_enabled" readonly="1"/>
                             <field name="woo_resource_webhooks_enabled" readonly="1"/>
                             <field name="woo_webhook_secret" widget="password"/>
-                        </group>
-                        <group string="Registered Topics">
-                            <field name="woo_webhook_ids" readonly="1" nolabel="1" colspan="2"/>
+                            <!-- woo_webhook_ids stays backend-only (register/unregister bookkeeping). -->
                         </group>
                     </group>
                     <div class="alert alert-info" role="status">

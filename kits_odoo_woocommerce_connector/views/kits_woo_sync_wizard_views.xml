@@ -72,6 +72,12 @@
         <field name="model">kits.woo.customer.fetch</field>
         <field name="arch" type="xml">
             <form string="Fetch Customer from WooCommerce">
+                <div class="alert alert-info" role="status">
+                    Fetch imports one WooCommerce customer (role "customer" only).
+                    Matching order: existing store binding → one contact with the same
+                    email → create a new contact. Multiple email matches are not merged.
+                    Name, email, and phone on an existing contact are never overwritten.
+                </div>
                 <group>
                     <field name="instance_id"/>
                     <field name="company_id" groups="base.group_multi_company"/>

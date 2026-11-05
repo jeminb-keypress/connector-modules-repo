@@ -771,9 +771,18 @@ class KitsConnectorInstance(models.Model):
         )
         if not incoming:
             return False
-        previous = self._woo_normalize_remote_datetime(
-            (getattr(binding, 'external_data', None) or {}).get('date_modified')
-        )
+        previous = ''
+        remote_modified = getattr(binding, 'remote_modified_at', False)
+        if remote_modified:
+            previous = self._woo_normalize_remote_datetime(remote_modified)
+        if not previous:
+            previous = self._woo_normalize_remote_datetime(
+                (getattr(binding, 'external_data', None) or {}).get('date_modified')
+            )
+        if not previous:
+            store_write = getattr(binding, 'store_write_date', False)
+            if store_write:
+                previous = self._woo_normalize_remote_datetime(store_write)
         if not previous:
             return False
         return incoming < previous

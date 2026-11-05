@@ -5,7 +5,9 @@ Matching for registered Woo customers:
 1. Customer binding for this store + external customer id → reuse the contact, do not change it
 2. Else one Odoo contact with the same email, any store → reuse it and add a binding for this store
 3. Else create the contact and its binding
-4. No person name → skip and log
+4. Multiple email matches → ambiguous (manual review; never create another contact)
+5. No person name → skip and log
+6. Only WooCommerce role ``customer`` is imported (bulk, Fetch, order, webhooks)
 
 Billing and shipping addresses are child contacts. An exact match is reused.
 Existing address and contact fields are never overwritten.
@@ -13,20 +15,66 @@ Guest checkout (customer_id 0) does not create a customer binding.
 """
 
 import logging
+from datetime import datetime
 
 from odoo import fields, models
+from odoo.exceptions import UserError
 
 _logger = logging.getLogger(__name__)
+
+# Keep in sync with kits.woo.customer.waiting.WAITING_PROCESS_BATCH
+CUSTOMER_WAITING_PROCESS_BATCH = 50
 
 
 class KitsConnectorInstanceCustomer(models.Model):
     _inherit = 'kits.connector.instance'
 
+    def _woo_customer_role_allowed(self, customer, *, allow_missing=False):
+        """Only WooCommerce users with role ``customer`` become store customers."""
+        role = (customer or {}).get('role')
+        if role is None or role == '':
+            return bool(allow_missing)
+        return str(role).strip().lower() == 'customer'
+
+    def _woo_customer_remote_modified(self, woo_customer):
+        """Parse Woo date_modified into an Odoo datetime, or False."""
+        raw = (woo_customer or {}).get('date_modified_gmt') or (woo_customer or {}).get(
+            'date_modified'
+        )
+        if not raw:
+            return False
+        text = str(raw).replace('T', ' ').replace('Z', '')
+        for fmt in ('%Y-%m-%d %H:%M:%S', '%Y-%m-%d %H:%M:%S.%f'):
+            try:
+                return fields.Datetime.to_datetime(datetime.strptime(text[:26], fmt))
+            except (TypeError, ValueError):
+                continue
+        try:
+            return fields.Datetime.to_datetime(text)
+        except Exception:  # noqa: BLE001
+            return False
+
+    def _woo_log_skipped_role(self, woo_customer, *, path='import'):
+        woo_id = (woo_customer or {}).get('id')
+        role = (woo_customer or {}).get('role') or '(missing)'
+        self._woo_log_customer(
+            self.env._(
+                'Skipped WooCommerce user %(id)s on %(store)s (%(path)s): role '
+                '"%(role)s" is not "customer".',
+                id=woo_id,
+                store=self.display_name,
+                path=path,
+                role=role,
+            ),
+            'info',
+        )
+
     def _woo_import_customers(self, job=None):
-        """Paginate Woo customers into the waiting list, then process the batch.
+        """Paginate Woo customers into the waiting list, then process one batch.
 
         Partners are not created during API pagination. Matching runs in the
-        waiting-list processor (same job after enqueue, plus cron / 50-threshold).
+        waiting-list processor. At most 50 pending rows are processed here; the
+        rest stay pending for cron / follow-up process jobs.
         """
         self.ensure_one()
         api = self._woo_api()
@@ -58,7 +106,7 @@ class KitsConnectorInstanceCustomer(models.Model):
                     errors.append(f'Customer {cid}: {exc}')
             customer_iter = customers
         else:
-            params = {'role': 'all'}
+            params = {'role': 'customer'}
             if modified_after:
                 params['modified_after'] = str(modified_after).replace(' ', 'T')
             customer_iter = api.get_customers(**params)
@@ -67,6 +115,10 @@ class KitsConnectorInstanceCustomer(models.Model):
             woo_id = woo_customer.get('id')
             if not woo_id:
                 skipped += 1
+                continue
+            if not self._woo_customer_role_allowed(woo_customer):
+                skipped += 1
+                self._woo_log_skipped_role(woo_customer, path='bulk import')
                 continue
             if not self._woo_customer_person_name(woo_customer):
                 skipped += 1
@@ -106,7 +158,7 @@ class KitsConnectorInstanceCustomer(models.Model):
                 )
 
         process_summary = Waiting._process_pending_for_instance(
-            self, limit=max(queued, 50), job=job,
+            self, limit=CUSTOMER_WAITING_PROCESS_BATCH, job=job,
         )
         self.woo_last_customer_sync = fields.Datetime.now()
         summary = (
@@ -124,6 +176,11 @@ class KitsConnectorInstanceCustomer(models.Model):
             self._woo_log_customer('Skipped a WooCommerce customer with no id.', 'warning')
             return 'skipped'
         woo_id = str(woo_id)
+
+        if not self._woo_customer_role_allowed(woo_customer):
+            self._woo_log_skipped_role(woo_customer, path='import')
+            return 'skipped'
+
         name = self._woo_customer_person_name(woo_customer)
         if not name:
             self._woo_log_customer(
@@ -138,9 +195,25 @@ class KitsConnectorInstanceCustomer(models.Model):
 
         CustomerBinding = self.env['kits.woo.customer.binding']
         binding = CustomerBinding._find(self, external_id=woo_id)
+        if binding and self._woo_payload_is_stale(binding, woo_customer):
+            self._woo_log_customer(
+                self.env._(
+                    'Skipped older WooCommerce customer %(id)s on %(store)s '
+                    '(remote modification is not newer than the binding).',
+                    id=woo_id,
+                    store=self.display_name,
+                ),
+            )
+            return 'skipped'
+
+        remote_modified = self._woo_customer_remote_modified(woo_customer)
+
         if binding and binding.partner_id:
             # Reactivate bindings that were soft-deleted on WooCommerce.
-            CustomerBinding._bind(self, binding.partner_id.id, woo_id)
+            CustomerBinding._bind(
+                self, binding.partner_id.id, woo_id,
+                remote_modified_at=remote_modified,
+            )
             self._woo_ensure_customer_addresses(binding.partner_id, woo_customer)
             self._woo_log_customer(
                 self.env._(
@@ -183,7 +256,9 @@ class KitsConnectorInstanceCustomer(models.Model):
                 )
                 return 'skipped'
             self._woo_ensure_customer_addresses(partner, woo_customer)
-            CustomerBinding._bind(self, partner.id, woo_id)
+            CustomerBinding._bind(
+                self, partner.id, woo_id, remote_modified_at=remote_modified,
+            )
             self._woo_log_customer(
                 self.env._(
                     'Reused contact %(contact)s by email for WooCommerce customer %(id)s on %(store)s. Name, email, phone, and existing addresses were not changed.',
@@ -202,7 +277,9 @@ class KitsConnectorInstanceCustomer(models.Model):
             kits_woo_skip_dirty=True,
         ).create(vals)
         self._woo_ensure_customer_addresses(partner, woo_customer)
-        CustomerBinding._bind(self, partner.id, woo_id)
+        CustomerBinding._bind(
+            self, partner.id, woo_id, remote_modified_at=remote_modified,
+        )
         self._woo_log_customer(
             self.env._(
                 'Created contact %(contact)s for WooCommerce customer %(id)s on %(store)s.',
@@ -335,11 +412,15 @@ class KitsConnectorInstanceCustomer(models.Model):
         email = self._woo_normalize_email(email)
         if not email:
             return self.env['res.partner']
-        return self.env['res.partner'].with_company(self.company_id).search([
+        # =ilike treats _ and % as wildcards, so narrow to exact normalized email.
+        candidates = self.env['res.partner'].with_company(self.company_id).search([
             ('email', '=ilike', email),
             ('parent_id', '=', False),
             ('company_id', 'in', [False, self.company_id.id]),
         ], order='id')
+        return candidates.filtered(
+            lambda partner: self._woo_normalize_email(partner.email) == email
+        )
 
     def _woo_find_partner_by_email(self, email):
         """Unambiguous email match, or empty if none / multiple."""
@@ -438,11 +519,23 @@ class KitsConnectorInstanceCustomer(models.Model):
                 id=woo_customer_id,
                 store=self.name,
             ))
+        if not self._woo_customer_role_allowed(remote):
+            self._woo_log_skipped_role(remote, path='fetch')
+            raise ValueError(self.env._(
+                'WooCommerce user %(id)s has role "%(role)s". Only role "customer" can be fetched.',
+                id=woo_customer_id,
+                role=remote.get('role') or '(missing)',
+            ))
         result = self._woo_import_one_customer(remote)
         if result == 'ambiguous':
             raise ValueError(self.env._(
                 'Multiple Odoo contacts share the email for WooCommerce customer %(id)s. '
                 'Resolve the duplicate contacts, then fetch again.',
+                id=woo_customer_id,
+            ))
+        if result == 'skipped':
+            raise ValueError(self.env._(
+                'Customer fetch finished with status skipped for WooCommerce customer %(id)s.',
                 id=woo_customer_id,
             ))
         binding = self.env['kits.woo.customer.binding']._find(self, external_id=str(remote['id']))
@@ -459,7 +552,11 @@ class KitsConnectorInstanceCustomer(models.Model):
     # -------------------------------------------------------------------------
 
     def _woo_partner_from_order(self, woo_order):
-        """Resolve partner for an order. Guests never get customer bindings."""
+        """Resolve partner for an order. Guests never get customer bindings.
+
+        Registered customers use the same matcher as customer import. Ambiguous
+        email matches raise so the order is not confirmed with a wrong contact.
+        """
         self.ensure_one()
         customer_id = woo_order.get('customer_id') or 0
         try:
@@ -473,25 +570,46 @@ class KitsConnectorInstanceCustomer(models.Model):
             try:
                 woo_customer = self._woo_api().get_customer(customer_id)
                 if woo_customer.get('id'):
-                    result = self._woo_import_one_customer(woo_customer)
-                    if result != 'ambiguous':
-                        binding = self.env['kits.woo.customer.binding']._find(
-                            self, external_id=str(woo_customer['id']),
-                        )
-                        if binding and binding.active and binding.partner_id:
-                            return binding.partner_id
+                    if not self._woo_customer_role_allowed(woo_customer):
+                        self._woo_log_skipped_role(woo_customer, path='order import')
+                    else:
+                        result = self._woo_import_one_customer(woo_customer)
+                        if result == 'ambiguous':
+                            raise UserError(self.env._(
+                                'WooCommerce order %(order)s customer %(customer)s matches '
+                                'multiple Odoo contacts by email. Resolve the duplicates '
+                                'before importing this order.',
+                                order=woo_order.get('id'),
+                                customer=customer_id,
+                            ))
+                        if result != 'skipped':
+                            binding = self.env['kits.woo.customer.binding']._find(
+                                self, external_id=str(woo_customer['id']),
+                            )
+                            if binding and binding.active and binding.partner_id:
+                                return binding.partner_id
+            except UserError:
+                raise
             except Exception:  # noqa: BLE001
                 _logger.info(
                     'Falling back to order billing for Woo customer %s on instance %s',
                     customer_id, self.id,
                 )
 
-        # Guest or unreachable customer: create/find by email without binding
+        # Guest, non-customer role, or unreachable customer: email without binding
         email = self._woo_normalize_email(billing.get('email') or '')
         if email:
-            partner = self._woo_find_partner_by_email(email)
-            if partner:
-                return partner
+            partners = self._woo_find_partners_by_email(email)
+            if len(partners) > 1:
+                raise UserError(self.env._(
+                    'WooCommerce order %(order)s billing email %(email)s matches '
+                    'multiple Odoo contacts. Resolve the duplicates before importing '
+                    'this order.',
+                    order=woo_order.get('id'),
+                    email=email,
+                ))
+            if len(partners) == 1:
+                return partners
 
         fallback = email or f"WooCommerce Guest {woo_order.get('id')}"
         vals = self._woo_prepare_partner_vals({

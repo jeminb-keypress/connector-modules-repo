@@ -25,14 +25,17 @@ class KitsWooCustomerFetch(models.TransientModel):
     woo_customer_id = fields.Char(
         string='WooCommerce Customer ID',
         required=True,
-        help='Numeric customer ID from the WooCommerce / WordPress admin URL.',
+        help='Numeric customer ID from the WooCommerce / WordPress admin URL. '
+             'Only WooCommerce users with role "customer" are imported.',
     )
     source_partner_id = fields.Many2one(
         'res.partner',
         string='Opened From',
         readonly=True,
         help='Contact form that opened this wizard (for defaults only). '
-             'Fetch always resolves by store + Woo ID and never merges by email.',
+             'Fetch matches by store + WooCommerce customer id first. '
+             'If no binding exists, a single company contact with the same email '
+             'is reused and linked. Multiple email matches require manual review.',
     )
 
     @api.model

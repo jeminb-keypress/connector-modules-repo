@@ -28,6 +28,7 @@ class TestWooSeparateBindings(WooConnectorCommon):
     def _customer(self, woo_id='10', email='buyer@example.com', first='Amit', last='Patel', street='1 Main'):
         return {
             'id': int(woo_id),
+            'role': 'customer',
             'email': email,
             'first_name': first,
             'last_name': last,

@@ -65,6 +65,7 @@ class TestWooDeletionAndSyncRules(WooConnectorCommon):
     def test_customer_details_and_no_cross_store_company_merge(self):
         woo_customer = {
             'id': 44,
+            'role': 'customer',
             'email': 'ada@example.com',
             'first_name': 'Ada',
             'last_name': 'Lovelace',

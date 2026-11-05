@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 {
     'name': 'Kits Odoo WooCommerce Connector',
-    'version': '20.0.1.15.0',
+    'version': '20.0.1.15.2',
     'category': 'Sales/Sales',
     'summary': 'WooCommerce store sync for products, customers, orders, coupons, and inventory',
     'description': """

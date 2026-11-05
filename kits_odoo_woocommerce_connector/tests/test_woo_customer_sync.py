@@ -22,6 +22,7 @@ class TestWooCustomerSync(WooConnectorCommon):
         })
         woo_customer = {
             'id': 101,
+            'role': 'customer',
             'email': 'shared@example.com',
             'first_name': 'Shared',
             'last_name': 'Buyer',
@@ -73,6 +74,7 @@ class TestWooCustomerSync(WooConnectorCommon):
         self.instance._woo_bind('res.partner', partner.id, '77')
         remote = {
             'id': 77,
+            'role': 'customer',
             'email': 'reimport@example.com',
             'first_name': 'New',
             'last_name': 'Name',
@@ -105,6 +107,7 @@ class TestWooCustomerSync(WooConnectorCommon):
     def test_fetch_creates_then_updates_without_duplicate(self):
         remote = {
             'id': 88,
+            'role': 'customer',
             'email': 'fetch@example.com',
             'first_name': 'Fetch',
             'last_name': 'One',
@@ -133,6 +136,7 @@ class TestWooCustomerSync(WooConnectorCommon):
         })
         remote = {
             'id': 99,
+            'role': 'customer',
             'email': 'local@example.com',
             'first_name': 'Remote',
             'last_name': 'Twin',

@@ -269,12 +269,8 @@ class KitsConnectorInstanceWebhook(models.Model):
         )
 
     def _woo_customer_webhook_role_allowed(self, customer):
-        """Webhooks accept only WooCommerce role ``customer`` (not bulk import)."""
-        role = (customer or {}).get('role')
-        if role is None or role == '':
-            # Some delete/ping payloads omit role; allow delete path separately.
-            return False
-        return str(role).strip().lower() == 'customer'
+        """Webhooks accept only WooCommerce role ``customer``."""
+        return self._woo_customer_role_allowed(customer, allow_missing=False)
 
     def _woo_process_customer_webhook(self, job=None):
         """Validate webhook payload and enqueue the customer waiting list."""
@@ -293,6 +289,28 @@ class KitsConnectorInstanceWebhook(models.Model):
                 woo_id = customer.get('id')
             if not woo_id:
                 return self.env._('Skipped customer.deleted without id.')
+            # Soft-delete only when a customer binding exists. Role is often omitted
+            # on delete payloads; never create a binding from a delete event.
+            binding = self.env['kits.woo.customer.binding']._find(
+                self, external_id=str(woo_id),
+            )
+            if not binding:
+                self._kits_log_operation(
+                    operation='woo_webhook_customer',
+                    status='success',
+                    level='info',
+                    message=self.env._(
+                        'Ignored customer.deleted for WooCommerce user %(id)s on %(store)s: '
+                        'no customer binding exists (non-customer roles are never bound).',
+                        id=woo_id,
+                        store=self.display_name,
+                    ),
+                    job=job,
+                )
+                return self.env._(
+                    'Ignored customer.deleted for %(id)s with no customer binding.',
+                    id=woo_id,
+                )
             Waiting._enqueue(
                 self,
                 external_id=woo_id,
@@ -324,7 +342,7 @@ class KitsConnectorInstanceWebhook(models.Model):
                 level='info',
                 message=self.env._(
                     'Ignored %(topic)s for WooCommerce user %(id)s with role %(role)s. '
-                    'Only role "customer" is accepted for webhooks.',
+                    'Only role "customer" is accepted for customer webhooks.',
                     topic=topic,
                     id=customer.get('id'),
                     role=customer.get('role') or '(missing)',

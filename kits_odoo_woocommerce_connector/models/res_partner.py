@@ -10,7 +10,8 @@ class ResPartner(models.Model):
         string='WooCommerce Customer',
         compute='_compute_woo_sync_info',
         search='_search_woo_is_store_customer',
-        help='On while this contact has a customer binding for at least one WooCommerce store.',
+        help='On while this contact has an active customer binding for at least one '
+             'WooCommerce store. Soft-deleted remote bindings do not keep this flag on.',
     )
     woo_company_name = fields.Char(
         string='Billing Company',
@@ -19,6 +20,7 @@ class ResPartner(models.Model):
     woo_binding_count = fields.Integer(
         string='Woo Bindings',
         compute='_compute_woo_sync_info',
+        help='Active WooCommerce customer bindings for this contact.',
     )
     woo_sync_state = fields.Selection(
         selection=[
@@ -26,24 +28,50 @@ class ResPartner(models.Model):
             ('synced', 'Synced'),
             ('not_synced', 'Not Synced'),
             ('error', 'Error'),
-            ('deleted', 'Deleted'),
+            ('deleted', 'Deleted Remotely'),
+            ('manual_review', 'Manual Review'),
             ('mixed', 'Mixed'),
         ],
         string='Woo Sync Status',
         compute='_compute_woo_sync_info',
-        help='Aggregated status across WooCommerce store bindings for this contact.',
+        help='Aggregated status across WooCommerce store bindings for this contact. '
+             'When every binding is soft-deleted remotely, status is Deleted Remotely '
+             '(not Not Linked).',
     )
 
     def _compute_woo_sync_info(self):
-        Binding = self.env['kits.woo.customer.binding']
+        Binding = self.env['kits.woo.customer.binding'].with_context(active_test=False)
         for partner in self:
-            bindings = Binding.search([
-                ('partner_id', '=', partner.id),
-                ('active', '=', True),
-            ])
-            partner.woo_binding_count = len(bindings)
-            partner.woo_is_store_customer = bool(bindings)
-            partner.woo_sync_state = 'synced' if bindings else 'none'
+            all_bindings = Binding.search([('partner_id', '=', partner.id)])
+            active = all_bindings.filtered('active')
+            partner.woo_binding_count = len(active)
+            partner.woo_is_store_customer = bool(active)
+            if not all_bindings:
+                partner.woo_sync_state = 'none'
+                continue
+            if not active:
+                # All bindings archived — typically deleted_remotely.
+                if all(
+                    binding.sync_state == 'deleted_remotely'
+                    for binding in all_bindings
+                ):
+                    partner.woo_sync_state = 'deleted'
+                else:
+                    partner.woo_sync_state = 'mixed'
+                continue
+            states = set(active.mapped('sync_state'))
+            if states == {'synced'}:
+                partner.woo_sync_state = 'synced'
+            elif states == {'not_synced'}:
+                partner.woo_sync_state = 'not_synced'
+            elif states == {'error'}:
+                partner.woo_sync_state = 'error'
+            elif states == {'manual_review'}:
+                partner.woo_sync_state = 'manual_review'
+            elif states == {'deleted_remotely'}:
+                partner.woo_sync_state = 'deleted'
+            else:
+                partner.woo_sync_state = 'mixed'
 
     def _search_woo_is_store_customer(self, operator, value):
         if operator == 'in':
@@ -58,7 +86,9 @@ class ResPartner(models.Model):
             operator, value = '!=', True in selected
         if operator not in ('=', '!='):
             return NotImplemented
-        partner_ids = self.env['kits.woo.customer.binding'].search([]).partner_id.ids
+        partner_ids = self.env['kits.woo.customer.binding'].search([
+            ('active', '=', True),
+        ]).partner_id.ids
         wants_customers = (operator == '=' and bool(value)) or (operator == '!=' and not value)
         if wants_customers:
             return [('id', 'in', partner_ids or [0])]
