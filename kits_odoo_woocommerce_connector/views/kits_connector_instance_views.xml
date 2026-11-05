@@ -38,45 +38,91 @@
                         invisible="platform_type != 'woocommerce' or not woo_resource_webhooks_enabled"
                         groups="kits_odoo_base_connector.group_kits_connector_manager"/>
             </xpath>
-            <!-- Generic base credentials are not used for WooCommerce (consumer key/secret instead) -->
-            <xpath expr="//group[@name='group_credentials']" position="attributes">
+
+            <!-- Hide base Connection/Credentials block for Woo; Store overview sits as a
+                 sheet-level group (not nested) so field inputs use full width. -->
+            <xpath expr="//group[./group[@name='group_connection']]" position="attributes">
                 <attribute name="invisible">platform_type == 'woocommerce'</attribute>
             </xpath>
-            <xpath expr="//group[@name='group_credentials']" position="after">
-                <group name="group_woo_credentials"
-                       string="WooCommerce Credentials"
-                       invisible="platform_type != 'woocommerce'"
-                       groups="kits_odoo_base_connector.group_kits_connector_manager">
-                    <field name="woo_consumer_key" widget="password"/>
-                    <field name="woo_consumer_secret" widget="password"/>
-                    <field name="woo_api_version"/>
-                </group>
-                <group name="group_woo_settings"
-                       string="WooCommerce Store Settings"
+            <xpath expr="//group[./group[@name='group_connection']]" position="after">
+                <group name="group_woo_overview"
+                       string="Store"
                        invisible="platform_type != 'woocommerce'">
+                    <field name="company_id" groups="base.group_multi_company"/>
                     <field name="warehouse_id"
                              required="platform_type == 'woocommerce' and (woo_auto_import_orders or woo_auto_export_stock)"/>
-                    <field name="pricelist_id"/>
-                    <field name="sales_team_id"/>
-                    <field name="woo_import_images"/>
-                    <field name="woo_sync_price"/>
-                    <field name="woo_sync_weight"/>
-                    <field name="woo_create_products"/>
-                    <field name="woo_match_by_sku"/>
-                    <field name="woo_allow_unmapped_order_lines"/>
-                    <field name="woo_order_statuses"/>
-                    <field name="woo_auto_import_orders"/>
-                    <field name="woo_auto_import_customers"/>
-                    <field name="woo_auto_export_products"/>
-                    <field name="woo_auto_export_stock"/>
+                    <field name="woo_timezone"/>
+                    <field name="lang_id"/>
                 </group>
             </xpath>
+
             <xpath expr="//notebook" position="inside">
+                <page string="Credentials"
+                      name="woo_credentials"
+                      invisible="platform_type != 'woocommerce'"
+                      groups="kits_odoo_base_connector.group_kits_connector_manager">
+                    <group>
+                        <group string="Connection">
+                            <field name="name"/>
+                            <field name="platform_type" readonly="1"/>
+                            <field name="base_url" placeholder="https://your-store.example"
+                                     required="platform_type == 'woocommerce'"/>
+                            <field name="active"/>
+                        </group>
+                        <group string="WooCommerce API">
+                            <field name="woo_consumer_key" widget="password"
+                                     required="platform_type == 'woocommerce'"/>
+                            <field name="woo_consumer_secret" widget="password"
+                                     required="platform_type == 'woocommerce'"/>
+                        </group>
+                    </group>
+                    <group string="Extra Configuration">
+                        <group>
+                            <field name="woo_wp_username_display" readonly="1"/>
+                            <field name="woo_wp_password_display" widget="password" readonly="1"/>
+                        </group>
+                        <group>
+                            <button name="action_woo_open_wp_media_credentials"
+                                    type="object"
+                                    string="Set WordPress Media Credentials"
+                                    class="btn-secondary"
+                                    groups="kits_odoo_base_connector.group_kits_connector_manager"/>
+                        </group>
+                    </group>
+                </page>
+                <page string="WooCommerce Settings"
+                      name="woo_settings"
+                      invisible="platform_type != 'woocommerce'">
+                    <group>
+                        <group string="Catalog &amp; Pricing">
+                            <field name="pricelist_id"/>
+                            <field name="sales_team_id"/>
+                            <field name="woo_import_images"/>
+                            <field name="woo_sync_price"/>
+                            <field name="woo_sync_weight"/>
+                            <field name="woo_create_products"/>
+                            <field name="woo_match_by_sku"/>
+                        </group>
+                        <group string="Orders &amp; Automation">
+                            <field name="woo_allow_unmapped_order_lines"/>
+                            <field name="woo_order_statuses"/>
+                            <field name="woo_update_customer_on_order_import"/>
+                            <field name="woo_auto_import_orders"/>
+                            <field name="woo_auto_import_customers"/>
+                            <field name="woo_auto_export_products"/>
+                            <field name="woo_auto_export_stock"/>
+                        </group>
+                    </group>
+                </page>
                 <page string="WooCommerce Sync Status"
                       name="woo_status"
                       invisible="platform_type != 'woocommerce'">
                     <group>
-                        <group>
+                        <group string="Connection">
+                            <field name="last_connection_test" readonly="1"/>
+                            <field name="last_error" readonly="1"/>
+                        </group>
+                        <group string="Last Sync">
                             <field name="woo_last_product_sync"/>
                             <field name="woo_last_customer_sync"/>
                             <field name="woo_last_order_sync"/>
@@ -84,7 +130,9 @@
                             <field name="woo_last_catalog_sync"/>
                             <field name="woo_last_coupon_sync"/>
                         </group>
-                        <group>
+                    </group>
+                    <group>
+                        <group string="Counts">
                             <field name="woo_bound_product_count"/>
                             <field name="woo_bound_customer_count"/>
                             <field name="woo_imported_order_count"/>
@@ -206,8 +254,10 @@
                     </div>
                 </page>
             </xpath>
-            <xpath expr="//field[@name='base_url']" position="attributes">
-                <attribute name="placeholder">https://your-store.example</attribute>
+
+            <!-- Hide Extra Configuration on WooCommerce stores (optional technical JSON stays available via Studio if needed) -->
+            <xpath expr="//page[@name='config']" position="attributes">
+                <attribute name="invisible">platform_type == 'woocommerce'</attribute>
             </xpath>
         </field>
     </record>
@@ -252,8 +302,8 @@
                 Create a WooCommerce store connection
             </p>
             <p>
-                Configure the store URL, REST API consumer key/secret, warehouse, and pricelist.
-                Then use Sync Operation, Export Products, or enable scheduled sync.
+                Set company, warehouse, timezone, and language on the store.
+                Connection keys live on the Credentials page; sync options on WooCommerce Settings.
             </p>
         </field>
     </record>

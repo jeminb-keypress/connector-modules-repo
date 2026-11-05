@@ -65,7 +65,8 @@ class TestWooSeparateBindings(WooConnectorCommon):
         api.get_customers.return_value = iter([self._customer()])
         with self._patch_api(api):
             summary = self.instance._woo_import_customers()
-        self.assertIn('reused=1', summary)
+        self.assertIn('queued=1', summary)
+        self.assertIn('done=1', summary)
         self.assertEqual(partner.name, 'Keep Name')
         self.assertEqual(partner.phone, '000')
         self.assertEqual(self.env['kits.woo.customer.binding'].search_count([
@@ -98,7 +99,8 @@ class TestWooSeparateBindings(WooConnectorCommon):
         api.get_customers.return_value = iter([self._customer(woo_id='13', email='new@example.com'), nameless])
         with self._patch_api(api):
             summary = self.instance._woo_import_customers()
-        self.assertIn('created=1', summary)
+        self.assertIn('queued=1', summary)
+        self.assertIn('done=1', summary)
         self.assertIn('skipped=1', summary)
         self.assertFalse(self.env['kits.woo.customer.binding']._find(self.instance, external_id='12'))
         created = self.env['kits.woo.customer.binding']._find(self.instance, external_id='13')
@@ -240,7 +242,10 @@ class TestWooSeparateBindings(WooConnectorCommon):
         })
         self.env['kits.woo.customer.binding']._bind(self.instance, partner.id, '15')
         self.instance._woo_delete_customer_binding('15')
-        self.assertFalse(self.env['kits.woo.customer.binding']._find(self.instance, external_id='15'))
+        binding = self.env['kits.woo.customer.binding']._find(self.instance, external_id='15')
+        self.assertTrue(binding)
+        self.assertFalse(binding.active)
+        self.assertEqual(binding.sync_state, 'deleted_remotely')
         self.assertTrue(partner.exists())
         self.assertFalse(partner.woo_is_store_customer)
 

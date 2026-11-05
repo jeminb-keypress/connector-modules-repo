@@ -199,10 +199,9 @@ class KitsConnectorInstanceOrder(models.Model):
             ))
 
         partner = self._woo_partner_from_order(woo_order)
-        # Billing and shipping stay on the customer contact. Do not create
-        # invoice or delivery child contacts for the same Woo customer.
-        invoice_partner = partner
-        shipping_partner = partner
+        invoice_partner, shipping_partner = self._woo_order_address_partners(
+            woo_order, partner,
+        )
 
         # Resolve all product lines first — fail before creating SO if mapping required
         line_vals_list = []
@@ -346,6 +345,15 @@ class KitsConnectorInstanceOrder(models.Model):
             updates['woo_payment_method_id'] = (
                 payment_map.payment_method_id.id if payment_map else False
             )
+        if self.woo_update_customer_on_order_import:
+            partner = self._woo_partner_from_order(woo_order)
+            invoice_partner, shipping_partner = self._woo_order_address_partners(
+                woo_order, partner,
+            )
+            if partner:
+                updates['partner_id'] = partner.id
+                updates['partner_invoice_id'] = invoice_partner.id
+                updates['partner_shipping_id'] = shipping_partner.id
 
         # Configurable unsupported-status logging
         known = {

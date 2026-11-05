@@ -77,6 +77,7 @@ class TestWooCustomerWebhook(WooConnectorCommon):
             'body_hash': 'abc',
             'customer': {
                 'id': 501,
+                'role': 'customer',
                 'email': 'hook@example.com',
                 'first_name': 'Hook',
                 'last_name': 'Created',
@@ -124,6 +125,7 @@ class TestWooCustomerWebhook(WooConnectorCommon):
                 'woo_id': 502,
                 'customer': {
                     'id': 502,
+                    'role': 'customer',
                     'email': 'upd@example.com',
                     'first_name': 'After',
                     'last_name': 'Update',
@@ -157,8 +159,11 @@ class TestWooCustomerWebhook(WooConnectorCommon):
             'state': 'pending',
         })
         summary = self.instance._woo_process_customer_webhook(job=job)
-        self.assertIn('kept', summary.lower())
-        self.assertFalse(binding.exists())
+        self.assertIn('delete', summary.lower())
+        binding.invalidate_recordset()
+        self.assertTrue(binding.exists())
+        self.assertFalse(binding.active)
+        self.assertEqual(binding.sync_state, 'deleted_remotely')
         self.assertTrue(partner.exists())
         self.assertEqual(partner.name, 'Keep Me')
         self.assertFalse(partner.woo_is_store_customer)
@@ -223,8 +228,9 @@ class TestWooCustomerWebhook(WooConnectorCommon):
         })
         job.action_run_now()
         self.assertEqual(job.state, 'done')
-        self.assertFalse(binding.exists())
-        self.assertTrue(partner.exists())
+        binding.invalidate_recordset()
+        self.assertTrue(binding.exists())
+        self.assertEqual(binding.sync_state, 'deleted_remotely')
         self.assertTrue(partner.exists())
 
     def test_register_webhooks_calls_api(self):

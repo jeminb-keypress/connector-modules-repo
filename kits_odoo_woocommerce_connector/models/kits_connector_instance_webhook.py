@@ -268,35 +268,45 @@ class KitsConnectorInstanceWebhook(models.Model):
             priority=5,
         )
 
+    def _woo_customer_webhook_role_allowed(self, customer):
+        """Webhooks accept only WooCommerce role ``customer`` (not bulk import)."""
+        role = (customer or {}).get('role')
+        if role is None or role == '':
+            # Some delete/ping payloads omit role; allow delete path separately.
+            return False
+        return str(role).strip().lower() == 'customer'
+
     def _woo_process_customer_webhook(self, job=None):
-        """Apply a queued customer webhook payload."""
+        """Validate webhook payload and enqueue the customer waiting list."""
         self.ensure_one()
         payload = (job.payload if job else None) or {}
         topic = payload.get('topic') or ''
         woo_id = payload.get('woo_id')
         customer = payload.get('customer') or {}
+        delivery_id = payload.get('delivery_id')
+        body_hash = payload.get('body_hash')
         event = topic.split('.')[-1] if topic else ''
+        Waiting = self.env['kits.woo.customer.waiting']
 
         if event == 'deleted':
+            if not woo_id and customer.get('id'):
+                woo_id = customer.get('id')
             if not woo_id:
                 return self.env._('Skipped customer.deleted without id.')
-            binding = self._woo_record_binding('res.partner', external_id=str(woo_id))
-            if not binding:
-                return self.env._(
-                    'No binding for deleted Woo customer %(id)s. The Odoo contact was kept.',
-                    id=woo_id,
-                )
-            partner = binding.partner_id
-            self._woo_delete_customer_binding(woo_id, reason=self.env._(
-                'Removed the customer binding after WooCommerce customer.deleted. '
-                'Contact %(partner)s was kept.',
-                partner=partner.display_name if partner else woo_id,
-            ))
+            Waiting._enqueue(
+                self,
+                external_id=woo_id,
+                payload=customer if isinstance(customer, dict) else {},
+                source='webhook',
+                event_type='delete',
+                delivery_id=delivery_id,
+                body_hash=body_hash,
+                process_delete_now=True,
+                trigger_batch=False,
+            )
             return self.env._(
-                'Removed the customer binding for Woo customer %(id)s. '
-                'Partner %(partner)s was kept.',
+                'Queued and processed delete for WooCommerce customer %(id)s.',
                 id=woo_id,
-                partner=partner.display_name if partner else woo_id,
             )
 
         if event not in ('created', 'updated'):
@@ -305,8 +315,27 @@ class KitsConnectorInstanceWebhook(models.Model):
         if not customer.get('id') and woo_id:
             customer = dict(customer, id=int(woo_id))
         if not customer.get('id'):
-            # Ping / empty payloads
             return self.env._('Skipped webhook without customer payload.')
+
+        if not self._woo_customer_webhook_role_allowed(customer):
+            self._kits_log_operation(
+                operation='woo_webhook_customer',
+                status='success',
+                level='info',
+                message=self.env._(
+                    'Ignored %(topic)s for WooCommerce user %(id)s with role %(role)s. '
+                    'Only role "customer" is accepted for webhooks.',
+                    topic=topic,
+                    id=customer.get('id'),
+                    role=customer.get('role') or '(missing)',
+                ),
+                job=job,
+            )
+            return self.env._(
+                'Ignored webhook %(topic)s for non-customer role %(role)s.',
+                topic=topic,
+                role=customer.get('role') or '(missing)',
+            )
 
         binding = self._woo_record_binding(
             'res.partner', external_id=str(customer.get('id')),
@@ -318,13 +347,27 @@ class KitsConnectorInstanceWebhook(models.Model):
                 id=customer.get('id'),
             )
 
-        result = self._woo_import_one_customer(customer, job=job)
-        partner = self._woo_find_odoo('res.partner', customer['id'])
+        row = Waiting._enqueue(
+            self,
+            external_id=customer.get('id'),
+            payload=customer,
+            source='webhook',
+            event_type='create' if event == 'created' else 'update',
+            delivery_id=delivery_id,
+            body_hash=body_hash,
+            trigger_batch=True,
+        )
+        # Apply this delivery via the waiting-list processor (dedupe + history).
+        if row.state == 'pending':
+            row._process_entries(job=job)
+        partner = row.partner_id
         return self.env._(
-            'Webhook %(topic)s processed (%(result)s) for partner %(partner)s.',
+            'Webhook %(topic)s processed (%(state)s) for WooCommerce customer %(id)s'
+            '%(partner)s.',
             topic=topic,
-            result=result,
-            partner=partner.display_name if partner else customer['id'],
+            state=row.state,
+            id=customer.get('id'),
+            partner=f' / {partner.display_name}' if partner else '',
         )
 
     # -------------------------------------------------------------------------

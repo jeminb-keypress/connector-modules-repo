@@ -18,6 +18,7 @@ import mimetypes
 from xmlrpc import client as xmlrpc_client
 
 from odoo import models
+from odoo.exceptions import UserError
 
 _logger = logging.getLogger(__name__)
 
@@ -224,6 +225,38 @@ class KitsConnectorInstanceImage(models.Model):
         user = (cfg.get('woo_wp_username') or '').strip()
         password = (cfg.get('woo_wp_password') or '').strip()
         return user, password
+
+    def _woo_set_wp_media_credentials(self, username, password):
+        """Persist WordPress media credentials in ``config_json`` (never log values)."""
+        self.ensure_one()
+        if not self.env.user.has_group(
+            'kits_odoo_base_connector.group_kits_connector_manager'
+        ):
+            raise UserError(self.env._(
+                'Only Connector Administrators can set WordPress media credentials.'
+            ))
+        config = dict(self.sudo().config_json or {})
+        config['woo_wp_username'] = (username or '').strip()
+        config['woo_wp_password'] = (password or '').strip()
+        self.sudo().write({'config_json': config})
+
+    def action_woo_open_wp_media_credentials(self):
+        """Open the manager wizard to set WordPress media upload credentials."""
+        self.ensure_one()
+        if not self._is_woocommerce():
+            raise UserError(self.env._(
+                'WordPress media credentials are only available for WooCommerce stores.'
+            ))
+        return {
+            'type': 'ir.actions.act_window',
+            'name': self.env._('Set WordPress Media Credentials'),
+            'res_model': 'kits.woo.wp.media.credentials',
+            'view_mode': 'form',
+            'target': 'new',
+            'context': {
+                'default_instance_id': self.id,
+            },
+        }
 
     def _woo_image_raw_bytes(self, image_value):
         """Return (raw_bytes, mimetype) from an Odoo Binary/Image field value."""

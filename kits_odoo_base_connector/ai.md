@@ -517,3 +517,19 @@ The living sections now say this module has no app menu, that WooCommerce custom
 `ConnectorHttpClient._raise_for_status` logged `response.url`, which for WooCommerce HTTP OAuth includes `oauth_consumer_key` and `oauth_signature`. `_safe_url_for_log` now strips the query string from error messages. Response body truncation is unchanged.
 
 **Files:** `services/http_client.py`, `__manifest__.py`, `ai.md`.
+
+### 2026-11-04 — Woo Credentials UX (no base code change)
+
+WooCommerce `20.0.1.14.7` hides base form fields `timeout`, `config_json`, and `notes` on Woo store forms and forces HTTP timeout to `DEFAULT_TIMEOUT` in the Woo module. Base fields remain for other platforms and for internal `config_json` keys (`woo_wp_username` / `woo_wp_password` / `woo_url_mode`). WordPress media credentials are edited via a Woo-only manager wizard, not raw JSON.
+
+### 2026-11-04 — Woo Connector Dashboard (no base code change)
+
+WooCommerce `20.0.1.14.8` adds an OWL dashboard that reads `kits.connector.instance`, `kits.connector.sync.job`, and Woo bindings/orders. Base models are unchanged; dashboard only adds read-only methods on the Woo inherit of `kits.connector.instance`.
+
+### 2026-11-04 — Note: WooCommerce customer waiting list
+
+WooCommerce (`kits_odoo_woocommerce_connector` `20.0.1.15.0`) adds platform-specific `kits.woo.customer.waiting` and continues to use `kits.connector.sync.job` for batch processing (`woo_process_customer_waiting`). No base-module schema change.
+
+### 2026-11-04 — Note: Woo live webhook ops (no base code change)
+
+Local live webhook delivery for Woo needs Odoo `dbfilter` (or equivalent) so `/kits_woo/webhook/...` resolves a DB, and WordPress must be allowed to POST to loopback/private Odoo URLs (WP rejects `127.0.0.1`/`localhost` by default). Documented in the Woo `ai.md` changelog; base unchanged.

@@ -1070,6 +1070,18 @@ class KitsConnectorInstanceProduct(models.Model):
             )
         return summary
 
+    def _woo_template_is_variable(self, template):
+        """Export as Woo variable only when Odoo has real selectable variants.
+
+        Attribute lines alone are not enough. ``no_variant`` / incomplete lines leave
+        a single template variant with no attribute values; posting empty variations
+        makes WooCommerce return HTTP 400.
+        """
+        variants = template.product_variant_ids
+        if len(variants) <= 1:
+            return False
+        return any(variant.product_template_attribute_value_ids for variant in variants)
+
     def _woo_export_one_template(self, template, api, *, allow_recreate=False):
         self.ensure_one()
         binding = self._woo_record_binding(
@@ -1081,7 +1093,7 @@ class KitsConnectorInstanceProduct(models.Model):
             # Local deletion keeps the remote product. Do not open a second remote product.
             return 'skipped'
 
-        is_variable = len(template.product_variant_ids) > 1 or bool(template.attribute_line_ids)
+        is_variable = self._woo_template_is_variable(template)
         price = self._woo_get_export_price(template.product_variant_id or template)
         payload = {
             'name': template.name,

@@ -6,8 +6,9 @@ from odoo.exceptions import UserError, ValidationError
 class KitsWooCustomerBinding(models.Model):
     """Links one Odoo contact to one WooCommerce customer on one store.
 
-    Name, email, phone, and addresses stay on ``res.partner``. This record only
-    stores the store and the external customer id.
+    Name, email, phone, and addresses stay on ``res.partner``. This record stores
+    the store, external customer id, and sync bookkeeping. Remote WooCommerce
+    deletion archives the binding (``deleted_remotely``) and keeps history.
     """
 
     _name = 'kits.woo.customer.binding'
@@ -44,6 +45,25 @@ class KitsWooCustomerBinding(models.Model):
         index=True,
     )
     active = fields.Boolean(default=True)
+    sync_state = fields.Selection(
+        selection=[
+            ('synced', 'Synced'),
+            ('not_synced', 'Not Synced'),
+            ('error', 'Error'),
+            ('deleted_remotely', 'Deleted Remotely'),
+            ('manual_review', 'Manual Review'),
+        ],
+        default='synced',
+        required=True,
+        index=True,
+    )
+    sync_error = fields.Text(copy=False)
+    sync_date = fields.Datetime(default=fields.Datetime.now)
+    deleted_remotely_at = fields.Datetime(
+        string='Deleted Remotely At',
+        readonly=True,
+        copy=False,
+    )
 
     _external_uniq = models.Constraint(
         'UNIQUE(instance_id, external_id)',
@@ -64,12 +84,15 @@ class KitsWooCustomerBinding(models.Model):
                 vals['external_id'] = str(vals['external_id'])
         return super().create(vals_list)
 
-    @api.depends('partner_id', 'external_id', 'instance_id')
+    @api.depends('partner_id', 'external_id', 'instance_id', 'sync_state')
     def _compute_display_name(self):
         for binding in self:
             contact = binding.partner_id.display_name or binding.external_id
             store = binding.instance_id.display_name or ''
-            binding.display_name = f'{contact} ↔ {binding.external_id} ({store})'
+            suffix = ''
+            if binding.sync_state == 'deleted_remotely':
+                suffix = ' [deleted remotely]'
+            binding.display_name = f'{contact} ↔ {binding.external_id} ({store}){suffix}'
 
     @api.constrains('external_id')
     def _check_external_id(self):
@@ -113,16 +136,61 @@ class KitsWooCustomerBinding(models.Model):
                 raise UserError(self.env._(
                     'This store already has a different customer link for that contact or external id.'
                 ))
-            if not binding.active:
-                binding.write({'active': True})
+            vals = {
+                'active': True,
+                'sync_state': 'synced',
+                'sync_error': False,
+                'sync_date': fields.Datetime.now(),
+                'deleted_remotely_at': False,
+            }
+            binding.write(vals)
             return binding
         return self.create({
             'instance_id': instance.id,
             'company_id': instance.company_id.id,
             'partner_id': partner_id,
             'external_id': external_id,
+            'sync_state': 'synced',
+            'sync_date': fields.Datetime.now(),
         })
 
     def _kits_get_odoo_record(self):
         self.ensure_one()
         return self.partner_id.exists()
+
+    def _kits_mark_synced(self):
+        self.write({
+            'active': True,
+            'sync_state': 'synced',
+            'sync_error': False,
+            'sync_date': fields.Datetime.now(),
+            'deleted_remotely_at': False,
+        })
+        return True
+
+    def _kits_mark_error(self, message):
+        self.write({
+            'sync_state': 'error',
+            'sync_error': message or False,
+            'sync_date': fields.Datetime.now(),
+        })
+        return True
+
+    def _kits_mark_manual_review(self, message):
+        self.write({
+            'sync_state': 'manual_review',
+            'sync_error': message or False,
+            'sync_date': fields.Datetime.now(),
+        })
+        return True
+
+    def _kits_mark_deleted_remotely(self, *, message=False):
+        """Archive this store binding. Keep the Odoo contact and history."""
+        self.write({
+            'active': False,
+            'sync_state': 'deleted_remotely',
+            'sync_error': message or False,
+            'deleted_remotely_at': fields.Datetime.now(),
+            'sync_date': fields.Datetime.now(),
+        })
+        return True

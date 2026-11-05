@@ -90,7 +90,8 @@ class TestWooCustomerSync(WooConnectorCommon):
         })
         with self._patch_api(api):
             summary = self.instance._woo_import_customers(job=job)
-        self.assertIn('reused=1', summary)
+        self.assertIn('queued=1', summary)
+        self.assertIn('done=1', summary)
         partner.invalidate_recordset()
         self.assertEqual(partner.name, 'Old Name')
         self.assertFalse(partner.phone)

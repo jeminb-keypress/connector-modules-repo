@@ -23,13 +23,19 @@ class KitsConnectorInstanceCustomer(models.Model):
     _inherit = 'kits.connector.instance'
 
     def _woo_import_customers(self, job=None):
+        """Paginate Woo customers into the waiting list, then process the batch.
+
+        Partners are not created during API pagination. Matching runs in the
+        waiting-list processor (same job after enqueue, plus cron / 50-threshold).
+        """
         self.ensure_one()
         api = self._woo_api()
         payload = (job.payload if job else None) or {}
         woo_ids = self._woo_parse_id_list(payload.get('woo_ids'))
         modified_after = payload.get('modified_after')
-        created = reused = skipped = failed = 0
+        queued = skipped = failed = 0
         errors = []
+        Waiting = self.env['kits.woo.customer.waiting']
 
         if woo_ids:
             customers = []
@@ -58,34 +64,54 @@ class KitsConnectorInstanceCustomer(models.Model):
             customer_iter = api.get_customers(**params)
 
         for woo_customer in customer_iter:
+            woo_id = woo_customer.get('id')
+            if not woo_id:
+                skipped += 1
+                continue
+            if not self._woo_customer_person_name(woo_customer):
+                skipped += 1
+                self._woo_log_customer(
+                    self.env._(
+                        'Skipped WooCommerce customer %(id)s on %(store)s because it has no first or last name.',
+                        id=woo_id,
+                        store=self.display_name,
+                    ),
+                    'warning',
+                )
+                continue
             try:
-                result = self._woo_import_one_customer(woo_customer, job=job)
-                if result == 'created':
-                    created += 1
-                elif result == 'reused':
-                    reused += 1
-                else:
-                    skipped += 1
+                Waiting._enqueue(
+                    self,
+                    external_id=woo_id,
+                    payload=woo_customer,
+                    source='bulk_import',
+                    event_type='update',
+                    trigger_batch=False,
+                )
+                queued += 1
             except Exception as exc:  # noqa: BLE001
                 failed += 1
-                errors.append(f"Customer {woo_customer.get('id')}: {exc}")
+                errors.append(f'Customer {woo_id}: {exc}')
                 _logger.exception(
-                    'WooCommerce customer import failed for %s on instance %s',
-                    woo_customer.get('id'), self.id,
+                    'WooCommerce customer enqueue failed for %s on instance %s',
+                    woo_id, self.id,
                 )
                 self._kits_log_operation(
                     operation='woo_import_customers',
                     status='failure',
                     level='error',
                     message=str(exc),
-                    details=f"woo_customer_id={woo_customer.get('id')}",
+                    details=f"woo_customer_id={woo_id}",
                     job=job,
                 )
 
+        process_summary = Waiting._process_pending_for_instance(
+            self, limit=max(queued, 50), job=job,
+        )
         self.woo_last_customer_sync = fields.Datetime.now()
         summary = (
-            f'Customer import finished: created={created}, reused={reused}, '
-            f'skipped={skipped}, failed={failed}'
+            f'Customer import finished: queued={queued}, skipped={skipped}, '
+            f'failed={failed}. {process_summary}'
         )
         if errors:
             summary = f'{summary}\n' + '\n'.join(errors[:20])
@@ -113,6 +139,8 @@ class KitsConnectorInstanceCustomer(models.Model):
         CustomerBinding = self.env['kits.woo.customer.binding']
         binding = CustomerBinding._find(self, external_id=woo_id)
         if binding and binding.partner_id:
+            # Reactivate bindings that were soft-deleted on WooCommerce.
+            CustomerBinding._bind(self, binding.partner_id.id, woo_id)
             self._woo_ensure_customer_addresses(binding.partner_id, woo_customer)
             self._woo_log_customer(
                 self.env._(
@@ -124,11 +152,25 @@ class KitsConnectorInstanceCustomer(models.Model):
             )
             return 'reused'
 
-        email = self._woo_customer_email(woo_customer)
-        partner = self._woo_find_partner_by_email(email) if email else self.env['res.partner']
+        email = self._woo_normalize_email(self._woo_customer_email(woo_customer))
+        partners = self._woo_find_partners_by_email(email) if email else self.env['res.partner']
+        if len(partners) > 1:
+            self._woo_log_customer(
+                self.env._(
+                    'Ambiguous email %(email)s for WooCommerce customer %(id)s on %(store)s. '
+                    '%(count)s contacts match. Manual review required.',
+                    email=email,
+                    id=woo_id,
+                    store=self.display_name,
+                    count=len(partners),
+                ),
+                'warning',
+            )
+            return 'ambiguous'
+        partner = partners[:1]
         if partner:
             already = CustomerBinding._find(self, odoo_record_id=partner.id)
-            if already and already.external_id != woo_id:
+            if already and already.external_id != woo_id and already.active:
                 self._woo_log_customer(
                     self.env._(
                         'Skipped WooCommerce customer %(id)s. Contact %(contact)s is already linked to customer %(other)s on %(store)s.',
@@ -180,20 +222,24 @@ class KitsConnectorInstanceCustomer(models.Model):
         )
 
     def _woo_delete_customer_binding(self, woo_id, reason=False):
-        """Remove this store's customer binding and leave the Odoo contact in place."""
+        """Soft-delete this store's customer binding; keep the Odoo contact and history."""
         self.ensure_one()
         binding = self.env['kits.woo.customer.binding']._find(self, external_id=str(woo_id))
         if not binding:
             return False
+        if binding.sync_state == 'deleted_remotely' and not binding.active:
+            return True
         partner = binding.partner_id
-        binding.unlink()
-        if partner:
-            partner.invalidate_recordset()
-        self._woo_log_customer(reason or self.env._(
-            'Removed the customer binding for WooCommerce customer %(id)s on %(store)s. The Odoo contact was kept.',
+        message = reason or self.env._(
+            'Marked the customer binding deleted remotely for WooCommerce customer '
+            '%(id)s on %(store)s. The Odoo contact was kept.',
             id=woo_id,
             store=self.display_name,
-        ))
+        )
+        binding._kits_mark_deleted_remotely(message=message)
+        if partner:
+            partner.invalidate_recordset()
+        self._woo_log_customer(message)
         return True
 
     def _woo_customer_person_name(self, woo_customer):
@@ -265,6 +311,8 @@ class KitsConnectorInstanceCustomer(models.Model):
             return False
         if self._woo_address_text(child.street) != self._woo_address_text(vals.get('street')):
             return False
+        if self._woo_address_text(child.street2) != self._woo_address_text(vals.get('street2')):
+            return False
         if self._woo_address_text(child.city) != self._woo_address_text(vals.get('city')):
             return False
         if self._woo_address_text(child.zip) != self._woo_address_text(vals.get('zip')):
@@ -277,16 +325,28 @@ class KitsConnectorInstanceCustomer(models.Model):
             return False
         return True
 
-    def _woo_find_partner_by_email(self, email):
-        """Case-insensitive match on top-level contacts, across stores in this company."""
+    @staticmethod
+    def _woo_normalize_email(email):
+        return (email or '').strip().lower()
+
+    def _woo_find_partners_by_email(self, email):
+        """All top-level contacts with this normalized email in the company."""
         self.ensure_one()
+        email = self._woo_normalize_email(email)
         if not email:
             return self.env['res.partner']
         return self.env['res.partner'].with_company(self.company_id).search([
             ('email', '=ilike', email),
             ('parent_id', '=', False),
             ('company_id', 'in', [False, self.company_id.id]),
-        ], order='id', limit=1)
+        ], order='id')
+
+    def _woo_find_partner_by_email(self, email):
+        """Unambiguous email match, or empty if none / multiple."""
+        partners = self._woo_find_partners_by_email(email)
+        if len(partners) == 1:
+            return partners
+        return self.env['res.partner']
 
     def _woo_prepare_partner_vals(self, woo_customer, include_address=True):
         billing = woo_customer.get('billing') or {}
@@ -379,7 +439,14 @@ class KitsConnectorInstanceCustomer(models.Model):
                 store=self.name,
             ))
         result = self._woo_import_one_customer(remote)
-        partner = self._woo_find_odoo('res.partner', remote['id'])
+        if result == 'ambiguous':
+            raise ValueError(self.env._(
+                'Multiple Odoo contacts share the email for WooCommerce customer %(id)s. '
+                'Resolve the duplicate contacts, then fetch again.',
+                id=woo_customer_id,
+            ))
+        binding = self.env['kits.woo.customer.binding']._find(self, external_id=str(remote['id']))
+        partner = binding.partner_id if binding and binding.active else self.env['res.partner']
         if not partner:
             raise ValueError(self.env._(
                 'Customer fetch finished with status %(status)s but no partner was bound.',
@@ -406,10 +473,13 @@ class KitsConnectorInstanceCustomer(models.Model):
             try:
                 woo_customer = self._woo_api().get_customer(customer_id)
                 if woo_customer.get('id'):
-                    self._woo_import_one_customer(woo_customer)
-                    partner = self._woo_find_odoo('res.partner', woo_customer['id'])
-                    if partner:
-                        return partner
+                    result = self._woo_import_one_customer(woo_customer)
+                    if result != 'ambiguous':
+                        binding = self.env['kits.woo.customer.binding']._find(
+                            self, external_id=str(woo_customer['id']),
+                        )
+                        if binding and binding.active and binding.partner_id:
+                            return binding.partner_id
             except Exception:  # noqa: BLE001
                 _logger.info(
                     'Falling back to order billing for Woo customer %s on instance %s',
@@ -417,7 +487,7 @@ class KitsConnectorInstanceCustomer(models.Model):
                 )
 
         # Guest or unreachable customer: create/find by email without binding
-        email = (billing.get('email') or '').strip()
+        email = self._woo_normalize_email(billing.get('email') or '')
         if email:
             partner = self._woo_find_partner_by_email(email)
             if partner:
@@ -427,9 +497,18 @@ class KitsConnectorInstanceCustomer(models.Model):
         vals = self._woo_prepare_partner_vals({
             'email': email,
             'billing': billing,
-        })
+        }, include_address=False)
         if not vals.get('name'):
             vals['name'] = fallback
         return self.env['res.partner'].with_company(self.company_id).with_context(
             kits_woo_skip_dirty=True,
         ).create(vals)
+
+    def _woo_order_address_partners(self, woo_order, partner):
+        """Return (invoice_partner, shipping_partner) child contacts when possible."""
+        self.ensure_one()
+        billing = woo_order.get('billing') or {}
+        shipping = woo_order.get('shipping') or {}
+        invoice = self._woo_upsert_child_address(partner, billing, 'invoice') or partner
+        delivery = self._woo_upsert_child_address(partner, shipping, 'delivery') or partner
+        return invoice, delivery

@@ -10,11 +10,15 @@ import requests
 from odoo import api, fields, models
 from odoo.exceptions import UserError, ValidationError
 
+from odoo.addons.base.models.res_partner import _tz_get
 from odoo.addons.kits_odoo_base_connector.services.exceptions import (
     ConnectorAuthError,
     ConnectorError,
 )
-from odoo.addons.kits_odoo_base_connector.services.http_client import ConnectorHttpClient
+from odoo.addons.kits_odoo_base_connector.services.http_client import (
+    DEFAULT_TIMEOUT,
+    ConnectorHttpClient,
+)
 
 from ..services.woo_api import WooCommerceAPI
 from ..services.woo_oauth import apply_http_oauth
@@ -46,6 +50,19 @@ class KitsConnectorInstance(models.Model):
         default='wc/v3',
         required=True,
         string='API Version',
+        help='Backend-managed. WooCommerce REST requests always use wc/v3.',
+    )
+    # Read-only Credentials display of WordPress media credentials (from config_json).
+    # Password shows a mask only — never the real secret in the form payload.
+    # Display-only; Credentials page is already manager-gated. Do not put
+    # ``groups=`` on these fields — form arch is parsed for all users.
+    woo_wp_username_display = fields.Char(
+        string='Username',
+        compute='_compute_woo_wp_media_credential_display',
+    )
+    woo_wp_password_display = fields.Char(
+        string='Password',
+        compute='_compute_woo_wp_media_credential_display',
     )
 
     # Store operational settings
@@ -54,6 +71,16 @@ class KitsConnectorInstance(models.Model):
         string='Warehouse',
         check_company=True,
         help='Stock quantities for inventory export are taken from this warehouse.',
+    )
+    woo_timezone = fields.Selection(
+        selection=_tz_get,
+        string='Store Timezone',
+        help='Timezone used for this WooCommerce store context in Odoo.',
+    )
+    lang_id = fields.Many2one(
+        'res.lang',
+        string='Language',
+        help='Preferred language for this WooCommerce store.',
     )
     pricelist_id = fields.Many2one(
         'product.pricelist',
@@ -113,6 +140,13 @@ class KitsConnectorInstance(models.Model):
         default=False,
         help='When enabled, the scheduled cron enqueues customer import jobs for this store.',
     )
+    woo_update_customer_on_order_import = fields.Boolean(
+        string='Want to Update Customer While Importing Order',
+        default=False,
+        help='When enabled, re-importing or updating a WooCommerce order also refreshes '
+             'the linked customer and billing/shipping child addresses using shared '
+             'matching rules. Existing main contact fields are never overwritten.',
+    )
     woo_auto_export_stock = fields.Boolean(
         string='Auto Export Inventory',
         default=False,
@@ -160,6 +194,18 @@ class KitsConnectorInstance(models.Model):
                 ('instance_id', '=', instance.id),
                 ('active', '=', True),
             ])
+
+    @api.depends('config_json')
+    def _compute_woo_wp_media_credential_display(self):
+        for instance in self:
+            if instance.platform_type != 'woocommerce':
+                instance.woo_wp_username_display = False
+                instance.woo_wp_password_display = False
+                continue
+            user, password = instance._woo_get_wp_media_credentials()
+            instance.woo_wp_username_display = user or False
+            # Mask only — never send the real WordPress password to the form client.
+            instance.woo_wp_password_display = '********' if password else False
 
     @api.constrains('platform_type', 'base_url', 'woo_consumer_key', 'woo_consumer_secret')
     def _check_woo_configuration(self):
@@ -210,6 +256,17 @@ class KitsConnectorInstance(models.Model):
     # HTTP hooks (override base mixin behavior for WooCommerce)
     # -------------------------------------------------------------------------
 
+    def _kits_get_timeout(self):
+        """WooCommerce uses the centralized default; timeout is not user-facing."""
+        self.ensure_one()
+        if self._is_woocommerce():
+            return DEFAULT_TIMEOUT
+        return super()._kits_get_timeout()
+
+    def _woo_api_version_path(self):
+        """Always WooCommerce REST API v3 (backend-managed, not user-selectable)."""
+        return 'wc/v3'
+
     def _kits_get_base_url(self):
         self.ensure_one()
         if not self._is_woocommerce():
@@ -217,8 +274,7 @@ class KitsConnectorInstance(models.Model):
         store = (self.base_url or '').rstrip('/')
         if not store:
             return ''
-        version = self.woo_api_version or 'wc/v3'
-        return f'{store}/wp-json/{version}'
+        return f'{store}/wp-json/{self._woo_api_version_path()}'
 
     def _woo_is_http_store(self):
         """True when the store URL is plain HTTP (typical local WordPress)."""
@@ -316,7 +372,7 @@ class KitsConnectorInstance(models.Model):
         """
         self.ensure_one()
         store = (self.base_url or '').rstrip('/')
-        version = self.woo_api_version or 'wc/v3'
+        version = self._woo_api_version_path()
         endpoint = endpoint if str(endpoint).startswith('/') else f'/{endpoint}'
         pretty = f'{store}/wp-json/{version}{endpoint}'
         index_php = f'{store}/index.php/wp-json/{version}{endpoint}'
@@ -783,7 +839,7 @@ class KitsConnectorInstance(models.Model):
         try:
             response = requests.get(
                 image_url,
-                timeout=min(self.timeout or 30, 60),
+                timeout=min(self._kits_get_timeout(), 60),
                 stream=True,
             )
             response.raise_for_status()

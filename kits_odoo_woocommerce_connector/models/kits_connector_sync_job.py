@@ -44,6 +44,13 @@ class KitsConnectorSyncJob(models.Model):
         self._woo_ensure_instance()
         return self.instance_id._woo_process_customer_webhook(job=self)
 
+    def _run_woo_process_customer_waiting(self):
+        self.ensure_one()
+        self._woo_ensure_instance()
+        return self.env['kits.woo.customer.waiting']._process_pending_for_instance(
+            self.instance_id, job=self,
+        )
+
     def _run_woo_import_categories(self):
         self.ensure_one()
         self._woo_ensure_instance()

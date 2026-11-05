@@ -8,6 +8,9 @@
                 <field name="partner_id"/>
                 <field name="external_id"/>
                 <field name="instance_id"/>
+                <field name="sync_state" widget="badge"/>
+                <field name="sync_date" optional="hide"/>
+                <field name="deleted_remotely_at" optional="hide"/>
                 <field name="company_id" groups="base.group_multi_company" optional="hide"/>
             </list>
         </field>
@@ -27,7 +30,14 @@
                         <group>
                             <field name="instance_id"/>
                             <field name="company_id" groups="base.group_multi_company"/>
+                            <field name="sync_state"/>
+                            <field name="sync_date"/>
+                            <field name="deleted_remotely_at"/>
+                            <field name="active"/>
                         </group>
+                    </group>
+                    <group string="Sync Error" invisible="not sync_error">
+                        <field name="sync_error" nolabel="1" colspan="2"/>
                     </group>
                 </sheet>
             </form>
@@ -44,8 +54,11 @@
                 <field name="instance_id"/>
                 <filter name="filter_active" string="Active" domain="[('active', '=', True)]"/>
                 <filter name="filter_archived" string="Archived" domain="[('active', '=', False)]"/>
+                <filter name="filter_deleted_remotely" string="Deleted Remotely"
+                       domain="[('sync_state', '=', 'deleted_remotely')]"/>
                 <group>
                     <filter name="group_store" string="Store" context="{'group_by': 'instance_id'}"/>
+                    <filter name="group_sync" string="Sync Status" context="{'group_by': 'sync_state'}"/>
                 </group>
             </search>
         </field>

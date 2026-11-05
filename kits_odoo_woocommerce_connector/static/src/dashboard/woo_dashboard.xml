@@ -1,0 +1,286 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<templates xml:space="preserve">
+    <t t-name="kits_odoo_woocommerce_connector.WooDashboard">
+        <div class="o_woo_dashboard o_action h-100 overflow-auto">
+            <div class="o_woo_dashboard_inner container-fluid py-3 px-2 px-sm-3 px-lg-4">
+
+                <div class="o_woo_dash_header d-flex flex-column flex-md-row flex-wrap align-items-stretch align-items-md-start justify-content-between gap-3 mb-3">
+                    <div class="min-w-0">
+                        <h1 class="o_woo_dash_title mb-1">WooCommerce Connector Dashboard</h1>
+                        <p class="o_woo_dash_subtitle mb-0 text-muted">
+                            Real-time overview of WooCommerce synchronization
+                        </p>
+                    </div>
+                    <div class="o_woo_date_controls d-flex flex-wrap align-items-center gap-2">
+                        <select class="form-select o_woo_date_select"
+                                t-on-change="this.onDateRangeChange"
+                                t-att-value="this.state.dateRange">
+                            <t t-foreach="this.dateOptions" t-as="opt" t-key="opt.value">
+                                <option t-att-value="opt.value"
+                                        t-att-selected="this.state.dateRange === opt.value"
+                                        t-esc="opt.label"/>
+                            </t>
+                        </select>
+                        <t t-if="this.showCustomDates">
+                            <input type="date" class="form-control o_woo_date_input"
+                                   t-att-value="this.state.customFrom"
+                                   t-on-change="this.onCustomFromChange"/>
+                            <input type="date" class="form-control o_woo_date_input"
+                                   t-att-value="this.state.customTo"
+                                   t-on-change="this.onCustomToChange"/>
+                            <button type="button" class="btn btn-primary o_woo_date_apply"
+                                    t-on-click="this.onApplyCustom">Apply</button>
+                        </t>
+                    </div>
+                </div>
+
+                <t t-if="this.state.loading">
+                    <div class="text-center text-muted py-5">Loading dashboard…</div>
+                </t>
+                <t t-elif="this.state.error">
+                    <div class="alert alert-danger" t-esc="this.state.error"/>
+                </t>
+                <t t-else="">
+
+                    <div class="row g-2 g-md-3 mb-3 o_woo_kpi_row">
+                        <div class="col-12 col-sm-6 col-lg-4 col-xxl">
+                            <div class="o_woo_kpi_card h-100">
+                                <div class="o_woo_kpi_icon o_woo_kpi_purple">
+                                    <i class="oi oi-fw" data-icon="storefront"/>
+                                </div>
+                                <div class="o_woo_kpi_body">
+                                    <div class="o_woo_kpi_label">Connected Stores</div>
+                                    <div class="o_woo_kpi_value" t-esc="this.kpiValue('connected_stores')"/>
+                                </div>
+                            </div>
+                        </div>
+                        <div class="col-12 col-sm-6 col-lg-4 col-xxl">
+                            <div class="o_woo_kpi_card h-100">
+                                <div class="o_woo_kpi_icon o_woo_kpi_blue">
+                                    <i class="oi oi-fw" data-icon="group"/>
+                                </div>
+                                <div class="o_woo_kpi_body">
+                                    <div class="o_woo_kpi_label">Customers</div>
+                                    <div class="d-flex align-items-baseline gap-2">
+                                        <div class="o_woo_kpi_value" t-esc="this.kpiValue('customers')"/>
+                                        <small t-if="this.kpiChange('customers')"
+                                               t-att-class="this.kpiChangeClass('customers')"
+                                               t-esc="this.kpiChange('customers')"/>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+                        <div class="col-12 col-sm-6 col-lg-4 col-xxl">
+                            <div class="o_woo_kpi_card h-100">
+                                <div class="o_woo_kpi_icon o_woo_kpi_green">
+                                    <i class="oi oi-fw" data-icon="inventory_2"/>
+                                </div>
+                                <div class="o_woo_kpi_body">
+                                    <div class="o_woo_kpi_label">Products</div>
+                                    <div class="d-flex align-items-baseline gap-2">
+                                        <div class="o_woo_kpi_value" t-esc="this.kpiValue('products')"/>
+                                        <small t-if="this.kpiChange('products')"
+                                               t-att-class="this.kpiChangeClass('products')"
+                                               t-esc="this.kpiChange('products')"/>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+                        <div class="col-12 col-sm-6 col-lg-4 col-xxl">
+                            <div class="o_woo_kpi_card h-100">
+                                <div class="o_woo_kpi_icon o_woo_kpi_orange">
+                                    <i class="oi oi-fw" data-icon="shopping_bag"/>
+                                </div>
+                                <div class="o_woo_kpi_body">
+                                    <div class="o_woo_kpi_label">Orders</div>
+                                    <div class="d-flex align-items-baseline gap-2">
+                                        <div class="o_woo_kpi_value" t-esc="this.kpiValue('orders')"/>
+                                        <small t-if="this.kpiChange('orders')"
+                                               t-att-class="this.kpiChangeClass('orders')"
+                                               t-esc="this.kpiChange('orders')"/>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+                        <div class="col-12 col-sm-6 col-lg-4 col-xxl">
+                            <div class="o_woo_kpi_card h-100">
+                                <div class="o_woo_kpi_icon o_woo_kpi_teal">
+                                    <i class="oi oi-fw" data-icon="check_circle"/>
+                                </div>
+                                <div class="o_woo_kpi_body">
+                                    <div class="o_woo_kpi_label">Sync Success Rate</div>
+                                    <div class="o_woo_kpi_value"
+                                         t-esc="this.formatRate(this.kpis.success_rate and this.kpis.success_rate.value)"/>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+
+                    <div class="row g-2 g-md-3 mb-3">
+                        <div class="col-12 col-lg-7">
+                            <div class="o_woo_card h-100">
+                                <div class="o_woo_card_header">
+                                    <h2 class="o_woo_card_title mb-0">Sync Overview</h2>
+                                </div>
+                                <div class="o_woo_chart_wrap">
+                                    <canvas t-ref="this.overviewCanvas"/>
+                                </div>
+                            </div>
+                        </div>
+                        <div class="col-12 col-lg-5">
+                            <div class="o_woo_card o_woo_store_card h-100 d-flex flex-column">
+                                <div class="o_woo_card_header d-flex align-items-center justify-content-between gap-2">
+                                    <h2 class="o_woo_card_title mb-0">Store Performance</h2>
+                                    <a href="#" class="o_woo_view_all text-nowrap"
+                                       t-on-click.prevent="this.onViewAllStores">View All</a>
+                                </div>
+                                <div class="o_woo_store_scroll flex-grow-1">
+                                    <t t-if="!this.stores.length">
+                                        <div class="text-muted p-3">No active WooCommerce stores.</div>
+                                    </t>
+                                    <t t-foreach="this.stores" t-as="store" t-key="store.id">
+                                        <div class="o_woo_store_row">
+                                            <div class="o_woo_store_icon">
+                                                <i class="oi oi-fw" data-icon="shopping_cart"/>
+                                            </div>
+                                            <div class="o_woo_store_main flex-grow-1 min-w-0">
+                                                <div class="d-flex flex-wrap align-items-center gap-2">
+                                                    <strong class="text-truncate" t-esc="store.name"/>
+                                                    <span t-att-class="this.storeStateClass(store.state)"
+                                                          t-esc="store.state_label"/>
+                                                </div>
+                                                <div class="text-muted small text-truncate" t-esc="store.url"/>
+                                                <div class="small text-muted">
+                                                    Last sync: <t t-esc="store.last_sync_display"/>
+                                                </div>
+                                            </div>
+                                            <div class="o_woo_store_metrics text-end">
+                                                <div class="small"><t t-esc="store.product_count"/> products</div>
+                                                <div class="small"><t t-esc="store.order_count"/> orders</div>
+                                                <div class="small fw-bold"
+                                                     t-esc="this.formatRate(store.success_rate)"/>
+                                            </div>
+                                        </div>
+                                    </t>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+
+                    <div class="row g-2 g-md-3">
+                        <div class="col-12 col-md-6 col-lg-4">
+                            <div class="o_woo_card h-100">
+                                <div class="o_woo_card_header">
+                                    <h2 class="o_woo_card_title mb-0">Sync Status</h2>
+                                </div>
+                                <div class="o_woo_status_body d-flex align-items-center gap-3">
+                                    <div class="o_woo_donut_wrap position-relative">
+                                        <canvas t-ref="this.statusCanvas"/>
+                                        <div class="o_woo_donut_center">
+                                            <div class="o_woo_donut_rate"
+                                                 t-esc="this.formatRate(this.syncStatus.success_rate)"/>
+                                            <div class="small text-muted">Success</div>
+                                        </div>
+                                    </div>
+                                    <div class="o_woo_status_legend">
+                                        <div class="o_woo_legend_item">
+                                            <span class="o_woo_dot o_woo_dot_success"/>
+                                            Successful
+                                            <strong class="ms-1" t-esc="this.syncStatus.done or 0"/>
+                                        </div>
+                                        <div class="o_woo_legend_item">
+                                            <span class="o_woo_dot o_woo_dot_danger"/>
+                                            Failed
+                                            <strong class="ms-1" t-esc="this.syncStatus.failed or 0"/>
+                                        </div>
+                                        <div class="o_woo_legend_item">
+                                            <span class="o_woo_dot o_woo_dot_warning"/>
+                                            Pending
+                                            <strong class="ms-1" t-esc="this.syncStatus.pending or 0"/>
+                                        </div>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+
+                        <div class="col-12 col-md-6 col-lg-4">
+                            <div class="o_woo_card h-100">
+                                <div class="o_woo_card_header d-flex align-items-center justify-content-between gap-2">
+                                    <h2 class="o_woo_card_title mb-0">Top Products</h2>
+                                    <a href="#" class="o_woo_view_all text-nowrap"
+                                       t-on-click.prevent="this.onViewAllProducts">View All</a>
+                                </div>
+                                <t t-if="!this.topProducts.length">
+                                    <div class="text-muted p-3">
+                                        No WooCommerce order lines in this period.
+                                    </div>
+                                </t>
+                                <t t-foreach="this.topProducts" t-as="product" t-key="product.id">
+                                    <div class="o_woo_product_row">
+                                        <div class="o_woo_product_thumb">
+                                            <img t-if="product.image_url"
+                                                 t-att-src="product.image_url"
+                                                 alt=""/>
+                                            <i t-else="" class="oi oi-fw text-muted" data-icon="inventory_2"/>
+                                        </div>
+                                        <div class="flex-grow-1 min-w-0">
+                                            <div class="text-truncate fw-semibold" t-esc="product.name"/>
+                                        </div>
+                                        <div class="text-nowrap small text-muted">
+                                            <t t-esc="product.qty"/> orders
+                                        </div>
+                                    </div>
+                                </t>
+                            </div>
+                        </div>
+
+                        <div class="col-12 col-md-12 col-lg-4">
+                            <div class="o_woo_card h-100">
+                                <div class="o_woo_card_header d-flex align-items-center justify-content-between gap-2">
+                                    <h2 class="o_woo_card_title mb-0">Pending Jobs</h2>
+                                    <a href="#" class="o_woo_view_all text-nowrap"
+                                       t-on-click.prevent="this.onViewAllJobs">View All</a>
+                                </div>
+                                <t t-if="!this.pendingJobs.length">
+                                    <div class="text-muted p-3">No pending synchronization jobs.</div>
+                                </t>
+                                <t t-else="">
+                                    <div class="table-responsive o_woo_jobs_scroll">
+                                        <table class="table table-sm o_woo_jobs_table mb-0">
+                                            <thead>
+                                                <tr>
+                                                    <th>Job Type</th>
+                                                    <th>Records</th>
+                                                    <th>Scheduled At</th>
+                                                    <th>Status</th>
+                                                </tr>
+                                            </thead>
+                                            <tbody>
+                                                <t t-foreach="this.pendingJobs" t-as="job" t-key="job.id">
+                                                    <tr>
+                                                        <td>
+                                                            <div class="fw-semibold small" t-esc="job.job_type"/>
+                                                            <div class="text-muted small text-truncate"
+                                                                 t-esc="job.name"/>
+                                                        </td>
+                                                        <td t-esc="job.records !== false ? job.records : '—'"/>
+                                                        <td class="small" t-esc="job.scheduled_display"/>
+                                                        <td>
+                                                            <span t-att-class="this.jobStateClass(job.state)"
+                                                                  t-esc="job.state_label"/>
+                                                        </td>
+                                                    </tr>
+                                                </t>
+                                            </tbody>
+                                        </table>
+                                    </div>
+                                </t>
+                            </div>
+                        </div>
+                    </div>
+
+                </t>
+            </div>
+        </div>
+    </t>
+</templates>

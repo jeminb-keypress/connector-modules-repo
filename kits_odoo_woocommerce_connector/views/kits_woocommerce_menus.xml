@@ -23,6 +23,13 @@
               web_icon="kits_odoo_woocommerce_connector,static/description/icon.png"
               groups="kits_odoo_base_connector.group_kits_connector_user"/>
 
+    <menuitem id="kits_woo_menu_dashboard"
+              name="Dashboard"
+              parent="kits_woo_menu_root"
+              action="kits_woo_dashboard_action"
+              sequence="5"
+              groups="kits_odoo_base_connector.group_kits_connector_user"/>
+
     <record id="kits_woo_sale_order_action" model="ir.actions.act_window">
         <field name="name">Orders</field>
         <field name="res_model">sale.order</field>
@@ -71,6 +78,13 @@
               parent="kits_woo_menu_sale"
               action="kits_woo_customer_action"
               sequence="20"
+              groups="kits_odoo_base_connector.group_kits_connector_user"/>
+
+    <menuitem id="kits_woo_menu_customer_waiting"
+              name="Customer Waiting List"
+              parent="kits_woo_menu_sale"
+              action="kits_woo_customer_waiting_action"
+              sequence="25"
               groups="kits_odoo_base_connector.group_kits_connector_user"/>
 
     <menuitem id="kits_woo_menu_customer_bindings"

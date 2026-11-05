@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 {
     'name': 'Kits Odoo WooCommerce Connector',
-    'version': '20.0.1.14.2',
+    'version': '20.0.1.15.0',
     'category': 'Sales/Sales',
     'summary': 'WooCommerce store sync for products, customers, orders, coupons, and inventory',
     'description': """
@@ -39,6 +39,7 @@ Features:
         'security/ir.access.csv',
         'views/kits_connector_instance_views.xml',
         'views/kits_woo_binding_views.xml',
+        'views/kits_woo_customer_waiting_views.xml',
         'views/kits_woo_coupon_views.xml',
         'views/kits_woo_refund_views.xml',
         'views/sale_order_views.xml',
@@ -46,8 +47,18 @@ Features:
         'views/product_template_views.xml',
         'views/res_partner_views.xml',
         'views/kits_woo_sync_wizard_views.xml',
+        'views/kits_woo_wp_media_credentials_views.xml',
+        'views/kits_woo_dashboard_views.xml',
         'views/kits_woocommerce_menus.xml',
+        'data/ir_cron_customer_waiting.xml',
     ],
+    'assets': {
+        'web.assets_backend': [
+            'kits_odoo_woocommerce_connector/static/src/dashboard/woo_dashboard.js',
+            'kits_odoo_woocommerce_connector/static/src/dashboard/woo_dashboard.xml',
+            'kits_odoo_woocommerce_connector/static/src/dashboard/woo_dashboard.scss',
+        ],
+    },
     'installable': True,
     'application': True,
     'auto_install': False,

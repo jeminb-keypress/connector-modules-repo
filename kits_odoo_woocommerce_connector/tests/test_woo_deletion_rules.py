@@ -182,10 +182,14 @@ class TestWooDeletionAndSyncRules(WooConnectorCommon):
                 'payload': {'topic': 'customer.deleted', 'woo_id': 70, 'customer': {'id': 70}},
                 'state': 'pending',
             }))
-            self.assertIn('kept', summary.lower())
-        self.assertFalse(binding.exists())
+            self.assertIn('delete', summary.lower())
+        binding.invalidate_recordset()
+        self.assertTrue(binding.exists())
+        self.assertFalse(binding.active)
+        self.assertEqual(binding.sync_state, 'deleted_remotely')
         self.assertTrue(partner.active)
         self.assertTrue(other_binding.exists())
+        self.assertTrue(other_binding.active)
         self.assertEqual(other_binding.partner_id, partner)
 
     def test_product_import_cost_and_stock_not_applied(self):

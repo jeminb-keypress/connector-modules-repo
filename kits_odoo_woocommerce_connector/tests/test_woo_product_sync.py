@@ -167,3 +167,42 @@ class TestWooProductSync(WooConnectorCommon):
             ('product_tmpl_id', '=', template.id),
         ], limit=1)
         self.assertEqual(binding.external_id, '900')
+
+    def test_export_attribute_lines_without_variants_stay_simple(self):
+        """Attribute lines alone must not force Woo variable + empty variation create."""
+        attribute = self.env['product.attribute'].create({
+            'name': 'Options Export',
+            'create_variant': 'no_variant',
+        })
+        value = self.env['product.attribute.value'].create({
+            'name': 'Drawers',
+            'attribute_id': attribute.id,
+        })
+        template = self.env['product.template'].create({
+            'name': 'Corner Desk Attr Only',
+            'default_code': 'DESK-ATTR',
+            'type': 'consu',
+            'is_storable': True,
+            'list_price': 20.0,
+            'sale_ok': True,
+            'woo_instance_ids': [(6, 0, [self.instance.id])],
+            'company_id': self.company.id,
+            'attribute_line_ids': [(0, 0, {
+                'attribute_id': attribute.id,
+                'value_ids': [(6, 0, [value.id])],
+            })],
+        })
+        self.assertEqual(len(template.product_variant_ids), 1)
+        self.assertTrue(template.attribute_line_ids)
+        api = MagicMock()
+        api.create_product.return_value = {'id': 901, 'images': []}
+        with self._patch_api(api):
+            summary = self.instance._woo_export_products()
+        self.assertIn('created=1', summary)
+        payload = api.create_product.call_args.args[0]
+        self.assertEqual(payload['type'], 'simple')
+        api.create_variation.assert_not_called()
+        binding = self.env['kits.woo.product.binding']._find(
+            self.instance, odoo_record_id=template.id,
+        )
+        self.assertEqual(binding.external_id, '901')

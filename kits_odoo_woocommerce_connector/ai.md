@@ -8,7 +8,7 @@
 
 Odoo 20 WooCommerce connector that syncs products, customers (import-only), sales orders, coupons, and inventory for one or more WooCommerce stores. Built as a **separate** addon under `custome/20.0/kits_odoo_woocommerce_connector` (sibling of the base connector — not nested inside it).
 
-**Current version:** `20.0.1.14.2`. Depends on base `20.0.1.9.1`.
+**Current version:** `20.0.1.15.0`. Depends on base `20.0.1.9.1`.
 
 The WooCommerce app menu is owned by this module. The base module has no menu.
 
@@ -25,12 +25,14 @@ kits_odoo_woocommerce_connector
     │
     ├─ extends kits.connector.instance   (platform=woocommerce, store settings, actions)
     ├─ extends kits.connector.sync.job   (_run_woo_* handlers)
-    ├─ kits.woo.customer.binding         (store + Woo customer id → res.partner)
+    ├─ kits.woo.customer.binding         (store + Woo customer id → res.partner; soft-delete)
+    ├─ kits.woo.customer.waiting         (queue for bulk import + customer webhooks)
     ├─ kits.woo.product.binding          (store + Woo product id → product.template)
     ├─ kits.woo.variant.binding          (store + Woo variation id → product.product)
     ├─ services/woo_api.py               (REST helpers, pagination, 429 retry)
+    ├─ controllers/woo_webhook.py        (public HMAC webhook endpoints)
     ├─ product.template / product.product / sale.order field extensions
-    └─ cron: schedule auto order import + inventory export jobs
+    └─ cron: auto order/inventory + Process Customer Waiting List (5 min)
                  │
                  ▼
         kits_odoo_base_connector (jobs cron, bindings, logs, HTTP)
@@ -42,11 +44,12 @@ kits_odoo_woocommerce_connector
 |----------|---------|---------|
 | `woo_import_products` | `_run_woo_import_products` | Woo → Odoo products |
 | `woo_export_products` | `_run_woo_export_products` | Odoo → Woo products |
-| `woo_import_customers` | `_run_woo_import_customers` | Woo → Odoo partners |
+| `woo_import_customers` | `_run_woo_import_customers` | Woo → Odoo: enqueue waiting list, then process |
 | `woo_export_customers` | _(removed)_ | Legacy job type raises; customer export not supported |
+| `woo_process_customer_waiting` | `_run_woo_process_customer_waiting` | Drain pending `kits.woo.customer.waiting` (≤50/batch) |
 | `woo_import_orders` | `_run_woo_import_orders` | Woo → confirmed sale orders |
 | `woo_export_inventory` | `_run_woo_export_inventory` | Odoo free qty → Woo stock |
-| `woo_webhook_customer` | `_run_woo_webhook_customer` | Async customer.created/updated/deleted webhook apply |
+| `woo_webhook_customer` | `_run_woo_webhook_customer` | HMAC customer webhook → waiting list (create/update process in-job; delete immediate) |
 | `woo_import_categories` | `_run_woo_import_categories` | Hierarchical category import |
 | `woo_export_categories` | `_run_woo_export_categories` | Category export |
 | `woo_import_tags` | `_run_woo_import_tags` | Tag import |
@@ -60,14 +63,42 @@ kits_odoo_woocommerce_connector
 
 The base module has no app menu. This module owns WooCommerce.
 
-1. Stores
-2. Sale: Orders, Customers, Customer Bindings, Refunds
-3. Product: Products, Product Bindings, Variant Bindings
-4. Sync Operations (connector administrator)
-5. Sync Jobs
-6. Logs
-7. Coupons
-8. Configuration: WooCommerce Settings (connector administrator)
+1. Dashboard (OWL client action `kits_woo_dashboard`)
+2. Stores
+3. Sale: Orders, Customers, **Customer Waiting List**, Customer Bindings, Refunds
+4. Product: Products, Product Bindings, Variant Bindings
+5. Sync Operations (connector administrator)
+6. Sync Jobs
+7. Logs
+8. Coupons
+9. Configuration: WooCommerce Settings (connector administrator)
+
+### Connector Dashboard (`20.0.1.14.8`)
+
+Read-only operational overview. **Does not** change sync, auth, webhook, or mapping logic.
+
+| Piece | Location |
+|-------|----------|
+| Data API | `kits.connector.instance.get_woo_dashboard_data` / `action_woo_dashboard_quick_action` in `models/kits_woo_dashboard.py` |
+| UI | OWL client action tag `kits_woo_dashboard` — `static/src/dashboard/woo_dashboard.{js,xml,scss}` |
+| Menu / action | `views/kits_woo_dashboard_views.xml`, menu sequence 5 |
+
+**KPI / chart sources**
+
+| Widget | Source |
+|--------|--------|
+| Connected Stores | Active `kits.connector.instance` (`platform_type=woocommerce`) |
+| Customers | Active `kits.woo.customer.binding` count |
+| Products | Distinct `product_tmpl_id` on active `kits.woo.product.binding` (no multi-store double count) |
+| Orders | `sale.order` with `woo_order_id` + `woo_instance_id` in selected period (`date_order`) |
+| Sync Success Rate / Status | `kits.connector.sync.job` done/failed in period; pending = draft/pending/running |
+| Sync Overview | Daily counts of **done** jobs by type family (products / customers / orders) |
+| Store Performance | Per-store bindings, orders in period, job success rate; scrollable card; View All → stores action |
+| Top Products | Top 5 templates by summed `sale.order.line` qty on Woo orders in period |
+| Pending Jobs | Pending/draft/running Woo jobs |
+| Quick Actions | Existing wizard / `action_woo_export_products` / logs / stores actions |
+
+Date ranges: Today, Last 7 / 30 / 90 days, Custom. Trends compare the previous equal-length period when data exists. No Recent Errors / sidebar.
 
 There is no generic Bindings menu and no delivery-order menu. Orders are `sale.order` rows with `woo_order_id`. Customers are top-level contacts with `woo_is_store_customer`. Products are templates with `woo_instance_ids`. Sync Jobs and Logs open the base models filtered to `platform_type = woocommerce`.
 
@@ -77,30 +108,35 @@ There is no generic Bindings menu and no delivery-order menu. Orders are `sale.o
 
 | Path | Responsibility |
 |------|----------------|
-| `__manifest__.py` | Version `20.0.1.14.2`. Depends: base connector, sale_management, sale_stock, stock, website_sale, delivery, payment, account |
+| `__manifest__.py` | Version `20.0.1.15.0`. Depends: base connector, sale_management, sale_stock, stock, website_sale, delivery, payment, account |
 | `services/woo_api.py` | WooCommerce REST facade (paginated lists, CRUD, 429 backoff) |
 | `models/kits_connector_instance.py` | Woo fields, auth hooks, connection test, enqueue actions, schedule cron |
 | `models/kits_connector_instance_image.py` | Main/gallery/variant image sync via `website_sale` `product.image`; export uploads via WP XML-RPC |
-| `models/kits_woo_customer_binding.py` | Customer binding: partner, store, external customer id |
+| `models/kits_woo_customer_binding.py` | Customer binding + `sync_state` incl. `deleted_remotely` soft-delete |
+| `models/kits_woo_customer_waiting.py` | Customer waiting-list queue, enqueue/process, cron, ACL helpers |
 | `models/kits_woo_product_binding.py` | Product binding and variant binding |
 | `models/kits_woo_binding_sync.py` | Shared sync state for product and variant bindings |
+| `models/kits_woo_dashboard.py` | Read-only dashboard data API / quick actions |
 | `models/kits_connector_instance_product.py` | Product import/export + attributes/variants/tags/barcode |
-| `models/kits_connector_instance_customer.py` | Dedicated customer import (no export) + guest-safe order partner helper |
-| `models/kits_connector_instance_order.py` | Order import, failure retry list, lines, shipping/discount, confirm |
+| `models/kits_connector_instance_customer.py` | Customer import → waiting list (no export) + guest-safe order partner helper |
+| `models/kits_connector_instance_order.py` | Order import, failure retry list, lines, shipping/discount, confirm; billing/shipping children |
 | `models/kits_connector_instance_inventory.py` | Warehouse-scoped inventory export, including Export Stock From |
 | `models/kits_connector_instance_mapping.py` | CSV/Excel product mapping. Links existing products only. |
 | `models/account_move.py` | Refund in WooCommerce from a customer credit note |
-| `models/kits_connector_instance_webhook.py` | Customer webhook fields, HMAC verify, register/enqueue/process |
-| `controllers/woo_webhook.py` | Public HTTP endpoint `/kits_woo/webhook/<id>/customers` |
-| `models/kits_connector_sync_job.py` | `_run_woo_*` dispatch wrappers |
-| `models/product_*.py` / `sale_order.py` | UI/tracking fields |
-| `tests/` | Mocked API TransactionCase + HttpCase webhook coverage |
+| `models/kits_connector_instance_webhook.py` | Customer webhook fields, HMAC verify, register/enqueue → waiting list |
+| `controllers/woo_webhook.py` | Public HTTP `/kits_woo/webhook/<id>/customers` (+ resource routes) |
+| `models/kits_connector_sync_job.py` | `_run_woo_*` dispatch wrappers incl. waiting-list processor |
+| `models/product_*.py` / `sale_order.py` / `res_partner.py` | UI/tracking fields (`woo_is_store_customer`, Fetch, …) |
+| `tests/` | Mocked API TransactionCase + HttpCase webhook + waiting-list coverage |
 | `data/product_data.xml` | Shipping + discount service products |
 | `data/ir_cron_data.xml` | Auto-schedule cron (15 min) |
+| `data/ir_cron_customer_waiting.xml` | Process Customer Waiting List cron (5 min) |
 | `views/kits_woocommerce_menus.xml` | WooCommerce app menu. See Menus above. |
-| `views/*` | Store form, bindings, coupons, refunds, orders, products, customers, sync wizard |
-| `wizard/kits_woo_sync_wizard.py` | One Sync Operation wizard with 20 operations (`20.0.1.14.1`). Company defaults to the current company. Mapping runs immediately. Every other operation queues a job and opens Sync Jobs. |
+| `views/kits_woo_customer_waiting_views.xml` | Waiting-list list/form/search/action |
+| `views/*` | Store form, bindings, coupons, refunds, orders, products, customers, dashboard, sync wizard |
+| `wizard/kits_woo_sync_wizard.py` | One Sync Operation wizard with 20 operations. Company defaults to the current company. Mapping runs immediately. Every other operation queues a job and opens Sync Jobs. |
 | `wizard/kits_woo_customer_fetch.py` | Fetch one customer. Same company default as Sync Operation. |
+| `wizard/kits_woo_wp_media_credentials.py` | Set WordPress media username/password into `config_json` |
 | `static/description/icon.png` | Module icon |
 | `ai.md` | This document |
 
@@ -120,12 +156,29 @@ Required for WooCommerce platform instances:
 - **Create Products Automatically** (`woo_create_products`, default True)
 - **Match Products by SKU** / **Allow Unmapped Order Lines**
 - **Auto Import Orders** / **Auto Import Customers** / **Auto Export Inventory** flags
-- **Image export media upload** (optional in `config_json`): `woo_wp_username` / `woo_wp_password` for WP XML-RPC `metaWeblog.newMediaObject`
+- **Want to Update Customer While Importing Order** (`woo_update_customer_on_order_import`) — when enabled, re-importing an existing order refreshes partner/addresses from Woo billing/shipping
+- **Image export media upload** (optional): WordPress username/password stored as `config_json` keys `woo_wp_username` / `woo_wp_password` for WP XML-RPC `metaWeblog.newMediaObject`. Credentials tab shows them **read-only** (password masked as `********`). Managers set/update them via **Set WordPress Media Credentials** (`kits.woo.wp.media.credentials`). Raw `config_json` is not shown on the Woo store form.
 - **Customer webhooks** (Customer Webhooks tab):
-  - `woo_webhook_public_base_url` — public HTTPS origin WooCommerce can reach (no path). Local/tunnel OK for dev.
+  - `woo_webhook_public_base_url` — public HTTPS origin WooCommerce can reach (no path). Prefer a real public/tunnel host in production.
   - Delivery URL is computed as `{base}/kits_woo/webhook/{instance_id}/customers`
   - Register creates Woo `customer.created` / `updated` / `deleted` webhooks with a shared HMAC secret
-  - **Production requires a public HTTPS Odoo URL** (or reverse proxy / tunnel). Multi-DB local servers may need `X-Odoo-Database` or `dbfilter` so unauthenticated POSTs hit the right DB.
+  - **Production requires a public HTTPS Odoo URL** (or reverse proxy / tunnel).
+  - **Multi-DB Odoo:** unauthenticated POSTs must select a DB. Prefer `--db-filter` / `dbfilter` for the live DB. `?db=` alone is unreliable on Odoo 20; `X-Odoo-Database` works but Woo cannot set custom headers.
+  - **Local WordPress caveat:** WP `wp_http_validate_url` rejects `127.0.0.1` / `localhost` delivery URLs (`A valid URL was not provided`). For local live tests, either allow unsafe URLs for webhook delivery (`reject_unsafe_urls=false` via a small mu-plugin/filter) or use a non-loopback reachable host/tunnel. Point `woo_webhook_public_base_url` at Odoo directly — there is no WordPress kits proxy plugin in this environment.
+
+### Credentials tab (Woo, manager-only)
+
+1. **Connection** — Store Name, Platform (readonly), Base URL, Active  
+2. **WooCommerce API** — Consumer Key / Secret (password widgets)  
+3. **Extra Configuration** — read-only WP Username / Password display + **Set WordPress Media Credentials** button  
+
+Not on Credentials (backend-managed or moved):
+
+- **HTTP Timeout** — always `DEFAULT_TIMEOUT` (30s) via `_kits_get_timeout()` for Woo; field hidden  
+- **API Version** — always `wc/v3` via `_woo_api_version_path()`; field hidden  
+- **`config_json` / `notes`** — not shown on Woo form (`notes` field kept on base model; map-line notes unchanged)  
+- **Last Connection Test / Last Error** — shown on **WooCommerce Sync Status** only  
+- **`woo_url_mode`** — still written internally into `config_json` for HTTP path preference  
 
 API base resolved as: `{base_url}/wp-json/wc/v3` (use the same host as WP `siteurl`, e.g. `localhost` not `127.0.0.1`, or OAuth signatures fail on HTTP).
 
@@ -194,17 +247,17 @@ CSV and xlsx. The header needs a WooCommerce product id (`woo_id` or `woo_produc
 5. **Not realtime:** Odoo product edits do not push until Export Products / scheduled job runs
 6. Multi-store: one Odoo template can have **one binding per store** (different Woo product ids)
 
-### Customers (import only — no Odoo→Woo customer export)
-1. Search `kits.woo.customer.binding` by the current store and the Woo customer id. When found, use that contact and do not change its name, email, phone, or existing addresses. Missing child addresses may still be added.
-2. Otherwise search top-level contacts in this company by case-insensitive email, across stores. Reuse the contact, create a binding for this store, and do not change its existing details. If that contact is already bound to a different Woo customer on this store, skip it.
-3. Otherwise create the contact from the Woo customer and create the binding. A customer with no first or last name is skipped and logged. A company name alone is not a person name. `woo_company_name` is set only when the contact is created.
-4. Billing and shipping are child contacts (`invoice` and `delivery`). Before creating one, exact-match an existing child on name, street, city, zip, state, and country. Phone is part of the billing match only. Reuse an exact match. Never write an existing address. An empty location is skipped.
-5. The Woo customer id lives only on `kits.woo.customer.binding.external_id`. The binding has no sync payload and no `external_data`.
-6. **Customer export is not supported** (UI/wizard/job removed in `20.0.1.9.5`).
-7. Guests (`customer_id` 0) never get customer bindings. The order path may reuse or create a contact by billing email and keeps the address on that contact.
-8. `customer.deleted` deletes this store’s customer binding, clears the store-customer indicator, and keeps the Odoo contact. A repeated event is safe.
-9. Deleting the Odoo contact deletes its customer bindings and does not call WooCommerce.
-10. `kits_connected_instance_ids` and `woo_is_store_customer` are computed from customer bindings. The Customers menu searches `woo_is_store_customer` with Odoo 20’s operator `in` and value `[True]`. `_search_woo_is_store_customer` treats that as true. Treating an unknown operator as “not a customer” inverts the list.
+### Customers (import only — no Odoo→Woo customer export) — `20.0.1.15.0`
+1. **Waiting list** (`kits.woo.customer.waiting`): bulk import and customer webhooks enqueue here first. Matching/partner writes run in the waiting-list processor. Sync job `woo_process_customer_waiting` (and a 5‑minute cron) process pending rows. At 50 eligible pending rows a process job is enqueued. Max 3 automatic attempts, then `manual`. Duplicate store+external id refreshes the pending payload; older events do not overwrite newer ones.
+2. **Matching** (shared by waiting list, Fetch, and order import): binding for this store + Woo id → else normalized email across company contacts → else create. Multiple email matches → `ambiguous` / manual review (never pick the first). Do not overwrite name/email/phone/addresses on reuse. No person name → skip.
+3. **Bindings** (`kits.woo.customer.binding`): store + external id + partner + `sync_state` (`synced` / `error` / `deleted_remotely` / …). Woo `customer.deleted` soft-deletes (`deleted_remotely`, `active=False`, timestamp) and keeps history; Odoo contact/addresses/orders/other stores untouched. Re-import reactivates the same binding.
+4. Billing/shipping are child contacts (`invoice` / `delivery`). Exact match includes name, street, street2, city, zip, state, country (+ phone on billing). Sales orders use those children for invoice/shipping addresses.
+5. **Webhooks**: HMAC → waiting list. Create/update accept **role=`customer` only** (other roles ignored/logged). Bulk import still uses `role=all`. After enqueue, create/update **process that pending row in the same webhook job** (near-real-time); deletes process immediately via the waiting list. Cron is a safety net for leftovers.
+6. **Fetch Customer** still calls the shared matcher directly (single-customer UX).
+7. **Guests** (`customer_id` 0) never get customer bindings.
+8. Store flag **Want to Update Customer While Importing Order** refreshes partner/addresses on existing order re-import when enabled.
+9. **Customer export is not supported.**
+10. `woo_is_store_customer` follows **active** bindings only.
 
 ### Orders import
 1. Retry `woo_order_import_failures` by ID first, then paginate with `after=woo_last_order_sync`. A scoped wizard job does not retry the failure list and does not move the watermark.
@@ -858,7 +911,10 @@ message after restart.
 **Setup (public HTTPS)**
 
 - Production: expose Odoo over HTTPS; put that origin in `woo_webhook_public_base_url`.
-- Dev: local WordPress may use `http://127.0.0.1:2099` if it can reach Odoo.
+- Dev: use a reachable non-blocked host. WordPress blocks loopback delivery URLs by default
+  (`127.0.0.1` / `localhost` → `A valid URL was not provided`). Allow unsafe URLs for webhook
+  POSTs locally, or use a tunnel. Odoo must be started with a DB filter (or equivalent) so
+  public webhook routes resolve without `X-Odoo-Database`.
 - Multi-database Odoo: configure `dbfilter` **or** ensure delivery includes `X-Odoo-Database`
   (Woo cannot set custom headers easily — prefer single DB / dbfilter in production).
 
@@ -1296,3 +1352,86 @@ Removed store-form header buttons that duplicate Sync Operation: Import Products
 Kept: Sync Operation, Export Products (not in the wizard), and the four webhook register/unregister buttons. Payment/shipping/tax fetch buttons on the map tabs are unchanged.
 
 **Files:** `views/kits_connector_instance_views.xml`, `__manifest__.py`, `ai.md`.
+
+### 2026-11-04 — Export variable detection (`20.0.1.14.3`)
+
+**Version:** `20.0.1.14.3`.
+
+Product export treated any template with `attribute_line_ids` as WooCommerce `variable`, then posted empty variations for single-variant / `no_variant` products. WooCommerce answered HTTP 400 (seen on Corner Desk Left/Right Sit).
+
+Fix: `_woo_template_is_variable` requires more than one Odoo variant that carries attribute values. Attribute lines alone stay `simple`.
+
+**Files:** `models/kits_connector_instance_product.py`, `tests/test_woo_product_sync.py`, `__manifest__.py`, `ai.md`.
+
+### 2026-11-04 — Store form layout (`20.0.1.14.4`)
+
+**Version:** `20.0.1.14.4`.
+
+WooCommerce store form main sheet shows the name plus Store group: company, warehouse, store timezone, language. Connection URL/timeout/active, consumer key/secret, API version, `config_json`, and notes move to the **Credentials** notebook page. Catalog/pricing and order automation flags move to **WooCommerce Settings**. Added fields `woo_timezone` and `lang_id`.
+
+**Files:** `models/kits_connector_instance.py`, `views/kits_connector_instance_views.xml`, `__manifest__.py`, `ai.md`.
+
+### 2026-11-04 — Store overview field width (`20.0.1.14.5`)
+
+**Version:** `20.0.1.14.5`.
+
+Removed the nested inner `<group>` under Store so company/warehouse/timezone/language use normal full label+value width instead of a half-column.
+
+**Files:** `views/kits_connector_instance_views.xml`, `__manifest__.py`, `ai.md`.
+
+### 2026-11-04 — Store overview full-width fix (`20.0.1.14.6`)
+
+**Version:** `20.0.1.14.6`.
+
+Store overview was still `col-lg-6` because it was inserted inside the base Connection/Credentials outer `<group>`. Hide that outer block for WooCommerce and place `group_woo_overview` as a sheet-level sibling so inputs use full sheet width.
+
+**Files:** `views/kits_connector_instance_views.xml`, `__manifest__.py`, `ai.md`.
+
+### 2026-11-04 — Simplify Credentials + WP media wizard (`20.0.1.14.7`)
+
+**Version:** `20.0.1.14.7`.
+
+Credentials tab now: Connection (name, platform, base URL, active), WooCommerce API (consumer key/secret), Extra Configuration (read-only WP username + masked password + **Set WordPress Media Credentials** wizard). Removed from Credentials UI: timeout, API version, raw `config_json`, notes, last connection test/error. Last connection fields move to Sync Status. Timeout forced to `DEFAULT_TIMEOUT`; API path forced to `wc/v3`. WP credentials still stored in `config_json` (`woo_wp_username` / `woo_wp_password`).
+
+**Files:** `models/kits_connector_instance.py`, `models/kits_connector_instance_image.py`, `wizard/kits_woo_wp_media_credentials.py`, `views/kits_connector_instance_views.xml`, `views/kits_woo_wp_media_credentials_views.xml`, `security/ir.access.csv`, `tests/test_woo_wp_media_credentials.py`, `__manifest__.py`, `ai.md`.
+
+### 2026-11-04 — WooCommerce Connector Dashboard (`20.0.1.14.8`)
+
+**Version:** `20.0.1.14.8`.
+
+Added read-only OWL dashboard (client action `kits_woo_dashboard`) with KPIs, sync overview chart, scrollable store performance, sync status donut, top products, pending jobs, and quick actions that call existing operations. Backend: `models/kits_woo_dashboard.py`. No changes to sync/auth/webhook business logic.
+
+**Files:** `models/kits_woo_dashboard.py`, `static/src/dashboard/*`, `views/kits_woo_dashboard_views.xml`, `views/kits_woocommerce_menus.xml`, `tests/test_woo_dashboard.py`, `__manifest__.py`, `ai.md`.
+
+### 2026-11-04 — Customer waiting list + soft delete (`20.0.1.15.0`)
+
+**Version:** `20.0.1.15.0`.
+
+Customer sync now stages through `kits.woo.customer.waiting` (bulk import + webhooks). Process via sync job `woo_process_customer_waiting`, 5-minute cron, manual actions, and auto-trigger at 50 pending. Bindings soft-delete as `deleted_remotely`. Email matching normalizes and flags ambiguity. Orders use billing/shipping child contacts. Store flag `woo_update_customer_on_order_import`. Webhooks accept role `customer` only (bulk still `role=all`). Export remains unsupported.
+
+**Files:** `models/kits_woo_customer_waiting.py`, `models/kits_woo_customer_binding.py`, `models/kits_connector_instance_customer.py`, `models/kits_connector_instance_webhook.py`, `models/kits_connector_instance_order.py`, `models/kits_connector_instance.py`, `models/kits_connector_sync_job.py`, views/menus/security/cron/migration, `tests/test_woo_customer_waiting.py` (+ updated customer tests), `ai.md`.
+
+### 2026-11-04 — Live webhook verification + ops notes (`20.0.1.15.0`, docs)
+
+**Version:** unchanged `20.0.1.15.0` (documentation / ops handover only).
+
+Live check on `odoo20-connectors` + WP `http://localhost/wordpress` (Local WooCommerce instance **1**):
+
+| Check | Result |
+|-------|--------|
+| Bulk import → waiting list → bindings synced | **Pass** (23+ customers; job result `queued` / `done`) |
+| Customer export blocked | **Pass** |
+| Soft-delete binding state `deleted_remotely` | **Pass** (model + UI filter) |
+| `customer.created` webhook → waiting list → partner + binding | **Pass** (e.g. Woo ID 26 → partner **Nisha Live Webhook**, binding Synced) |
+| Webhook create/update processes pending row in webhook job | **Pass** (near-real-time; cron is backup) |
+
+**Ops findings (local):**
+
+1. Odoo public webhook routes need a selected DB — use `--db-filter='^odoo20-connectors$'` (or conf `dbfilter`). Without it, GET/POST returns HTML 404 (“No database is selected…”).
+2. Stale registry / old debug session can omit controller routes until Odoo restart.
+3. WordPress rejects webhook delivery to `127.0.0.1`/`localhost` unless `reject_unsafe_urls` is disabled for those requests. After allowing local delivery, Woo POSTed successfully (`200 {"status":"accepted"}`).
+4. Prefer `woo_webhook_public_base_url=http://127.0.0.1:2099` (or tunnel) pointing at **Odoo**, not `http://localhost/wordpress/...` — no kits WP reverse-proxy plugin is installed here.
+5. Disable leftover webhooks aimed at old instance IDs (e.g. instance **9**) so only the connected store receives events.
+6. Re-register customer webhooks after changing public base URL so Woo delivery URL + HMAC secret stay aligned.
+
+**Files:** `ai.md` (this entry + header/architecture/menus/job/webhook setup sync to `20.0.1.15.0`).
