@@ -299,7 +299,7 @@ class KitsConnectorInstanceCustomer(models.Model):
         )
 
     def _woo_delete_customer_binding(self, woo_id, reason=False):
-        """Soft-delete this store's customer binding; keep the Odoo contact and history."""
+        """Soft-delete this store's customer binding; keep the Odoo contact and +."""
         self.ensure_one()
         binding = self.env['kits.woo.customer.binding']._find(self, external_id=str(woo_id))
         if not binding:
