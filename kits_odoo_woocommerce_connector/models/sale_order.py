@@ -7,7 +7,7 @@ class SaleOrder(models.Model):
     _inherit = 'sale.order'
 
     woo_instance_id = fields.Many2one(
-        'kits.connector.instance',
+        'kits.woo.instance',
         string='WooCommerce Store',
         copy=False,
         index=True,

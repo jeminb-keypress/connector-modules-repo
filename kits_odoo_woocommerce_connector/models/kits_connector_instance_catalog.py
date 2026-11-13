@@ -10,9 +10,11 @@ _logger = logging.getLogger(__name__)
 
 
 class KitsConnectorInstanceCatalog(models.Model):
-    _inherit = 'kits.connector.instance'
+    _inherit = 'kits.woo.instance'
 
-    woo_last_catalog_sync = fields.Datetime(readonly=True, copy=False)
+    woo_last_catalog_sync = fields.Datetime(
+        string='Catalog', readonly=True, copy=False,
+    )
 
     def action_woo_import_categories(self):
         self._ensure_woo_ready()
@@ -164,7 +166,7 @@ class KitsConnectorInstanceCatalog(models.Model):
         else:
             # Export categories already bound for this instance
             bindings = self._woo_binding().search([
-                ('instance_id', '=', self.id),
+                ('instance_id', '=', self._kits_instance_ref()),
                 ('odoo_model', '=', 'product.category'),
                 ('active', '=', True),
             ])
@@ -447,7 +449,7 @@ class KitsConnectorInstanceCatalog(models.Model):
             tags = self.env['product.tag'].browse(tag_ids).exists()
         elif mode == 'update':
             bindings = self._woo_binding().search([
-                ('instance_id', '=', self.id),
+                ('instance_id', '=', self._kits_instance_ref()),
                 ('odoo_model', '=', 'product.tag'),
                 ('active', '=', True),
             ])

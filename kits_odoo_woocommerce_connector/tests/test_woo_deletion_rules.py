@@ -51,13 +51,13 @@ class TestWooDeletionAndSyncRules(WooConnectorCommon):
             summary = self.instance._woo_import_products()
         self.assertIn('failed=1', summary)
         self.assertFalse(self.env['kits.connector.binding'].search([
-            ('instance_id', '=', self.instance.id),
+            ('instance_id', '=', self.instance._kits_instance_ref()),
             ('external_id', '=', '501'),
         ]))
         self.assertEqual(first.name, 'Local A')
         self.assertEqual(second.name, 'Local B')
         log = self.env['kits.connector.log'].search([
-            ('instance_id', '=', self.instance.id),
+            ('instance_id', '=', self.instance._kits_instance_ref()),
             ('message', 'ilike', 'AMBIG-1'),
         ], limit=1)
         self.assertTrue(log)
@@ -118,7 +118,7 @@ class TestWooDeletionAndSyncRules(WooConnectorCommon):
             ('name', '=', 'Analytical Engines'),
         ]))
 
-        other = self.env['kits.connector.instance'].create({
+        other = self.env['kits.woo.instance'].create({
             'name': 'Store B Customers',
             'platform_type': 'woocommerce',
             'company_id': self.company.id,
@@ -164,7 +164,7 @@ class TestWooDeletionAndSyncRules(WooConnectorCommon):
             'email': 'keep@example.com',
             'company_id': self.company.id,
         })
-        other = self.env['kits.connector.instance'].create({
+        other = self.env['kits.woo.instance'].create({
             'name': 'Store B Delete',
             'platform_type': 'woocommerce',
             'company_id': self.company.id,
@@ -241,7 +241,7 @@ class TestWooDeletionAndSyncRules(WooConnectorCommon):
             'type': 'consu',
             'company_id': self.company.id,
         })
-        other = self.env['kits.connector.instance'].create({
+        other = self.env['kits.woo.instance'].create({
             'name': 'Store B Products',
             'platform_type': 'woocommerce',
             'company_id': self.company.id,
@@ -402,7 +402,7 @@ class TestWooDeletionAndSyncRules(WooConnectorCommon):
         sent_qty = api.update_product.call_args.args[1]['stock_quantity']
         self.assertEqual(sent_qty, int(product.with_context(warehouse_id=self.warehouse.id).free_qty))
 
-        other = self.env['kits.connector.instance'].create({
+        other = self.env['kits.woo.instance'].create({
             'name': 'Store B Stock',
             'platform_type': 'woocommerce',
             'company_id': self.company.id,
@@ -433,7 +433,7 @@ class TestWooDeletionAndSyncRules(WooConnectorCommon):
         with patch.object(type(self.instance), '_woo_enqueue_inventory_export', wrapped):
             self.env['stock.move']._woo_schedule_inventory_export_for_moves(move)
         other_jobs = self.env['kits.connector.sync.job'].search([
-            ('instance_id', '=', other.id),
+            ('instance_id', '=', other._kits_instance_ref()),
             ('job_type', '=', 'woo_export_inventory'),
         ])
         self.assertTrue(other_jobs)

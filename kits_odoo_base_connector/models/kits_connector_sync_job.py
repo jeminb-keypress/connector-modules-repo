@@ -20,12 +20,13 @@ class KitsConnectorSyncJob(models.Model):
     _check_company_auto = True
 
     name = fields.Char(required=True, tracking=True)
-    instance_id = fields.Many2one(
-        'kits.connector.instance',
+    instance_id = fields.Reference(
+        selection='_kits_selection_instance_models',
+        string='Store / Instance',
         required=True,
         index=True,
-        ondelete='cascade',
         tracking=True,
+        help='Platform instance as model,id (e.g. kits.woo.instance,12).',
     )
     company_id = fields.Many2one(
         'res.company',
@@ -33,10 +34,10 @@ class KitsConnectorSyncJob(models.Model):
         index=True,
         default=lambda self: self.env.company,
     )
-    platform_type = fields.Selection(
-        related='instance_id.platform_type',
-        store=True,
-        readonly=True,
+    platform_type = fields.Char(
+        string='Platform',
+        index=True,
+        help='Copied from the platform instance for menu filters and reporting.',
     )
     job_type = fields.Char(
         required=True,
@@ -81,17 +82,38 @@ class KitsConnectorSyncJob(models.Model):
     error_message = fields.Text(readonly=True, copy=False)
     log_ids = fields.One2many('kits.connector.log', 'job_id', string='Logs')
 
+    @api.model
+    def _kits_selection_instance_models(self):
+        selection = []
+        if 'kits.woo.instance' in self.env:
+            selection.append(('kits.woo.instance', 'WooCommerce Store'))
+        if 'kits.shopify.instance' in self.env:
+            selection.append(('kits.shopify.instance', 'Shopify Store'))
+        return selection
+
+    def _kits_get_instance(self):
+        self.ensure_one()
+        return self.env['kits.connector.instance.mixin']._kits_browse_instance_ref(
+            self.instance_id,
+        )
+
     @api.onchange('instance_id')
     def _onchange_instance_id(self):
-        if self.instance_id:
-            self.company_id = self.instance_id.company_id
+        instance = self._kits_get_instance() if self.instance_id else self.env['res.company']
+        if instance:
+            self.company_id = instance.company_id
+            self.platform_type = getattr(instance, 'platform_type', False)
 
     @api.model_create_multi
     def create(self, vals_list):
+        Mixin = self.env['kits.connector.instance.mixin']
         for vals in vals_list:
-            if vals.get('instance_id') and not vals.get('company_id'):
-                instance = self.env['kits.connector.instance'].browse(vals['instance_id'])
-                vals['company_id'] = instance.company_id.id
+            ref = vals.get('instance_id')
+            instance = Mixin._kits_browse_instance_ref(ref) if ref else Mixin.browse()
+            if instance:
+                vals['instance_id'] = instance._kits_instance_ref()
+                vals.setdefault('company_id', instance.company_id.id)
+                vals.setdefault('platform_type', instance.platform_type)
         return super().create(vals_list)
 
     @api.constrains('max_retries')
@@ -99,10 +121,6 @@ class KitsConnectorSyncJob(models.Model):
         for job in self:
             if job.max_retries < 0:
                 raise UserError(self.env._('Max retries cannot be negative.'))
-
-    # -------------------------------------------------------------------------
-    # UI / workflow actions
-    # -------------------------------------------------------------------------
 
     def action_enqueue(self):
         for job in self:
@@ -151,24 +169,19 @@ class KitsConnectorSyncJob(models.Model):
         return True
 
     def action_run_now(self):
-        """Execute jobs immediately in the current transaction."""
         for job in self:
             job._process_job()
         return True
 
-    # -------------------------------------------------------------------------
-    # Execution engine
-    # -------------------------------------------------------------------------
-
     def _process_job(self):
-        """Run a single job with retry bookkeeping and logging."""
         self.ensure_one()
         if self.state == 'cancelled':
             return False
-        if not self.instance_id.active:
+        instance = self._kits_get_instance()
+        if not instance or not instance.active:
             self.write({
                 'state': 'failed',
-                'error_message': self.env._('Connector instance is archived.'),
+                'error_message': self.env._('Connector instance is missing or archived.'),
                 'finished_at': fields.Datetime.now(),
             })
             return False
@@ -179,28 +192,16 @@ class KitsConnectorSyncJob(models.Model):
             'attempt_count': self.attempt_count + 1,
             'error_message': False,
         })
-        # Persist running state so the UI/cron can observe progress and attempt
-        # counts survive hard failures. Skip during tests.
         if not tools.config['test_enable']:
             self.env.cr.commit()
 
         try:
             result = self._execute()
-        except Exception as exc:  # noqa: BLE001 - job boundary must catch all
+        except Exception as exc:  # noqa: BLE001
             return self._handle_failure(exc)
         return self._handle_success(result)
 
     def _execute(self):
-        """Dispatch to a platform handler method named ``_run_<job_type>``.
-
-        Platform modules implement handlers on this model (or an inherited
-        model), for example::
-
-            def _run_import_orders(self):
-                ...
-
-        The base module intentionally provides no business sync handlers.
-        """
         self.ensure_one()
         method_name = f'_run_{self.job_type}'
         handler = getattr(self, method_name, None)
@@ -222,19 +223,22 @@ class KitsConnectorSyncJob(models.Model):
             'finished_at': fields.Datetime.now(),
             'error_message': False,
         })
-        self.instance_id._kits_log_operation(
-            operation=self.job_type,
-            status='success',
-            level='info',
-            message=summary,
-            job=self,
-        )
+        instance = self._kits_get_instance()
+        if instance:
+            instance._kits_log_operation(
+                operation=self.job_type,
+                status='success',
+                level='info',
+                message=summary,
+                job=self,
+            )
         return True
 
     def _handle_failure(self, exc):
         self.ensure_one()
-        if isinstance(exc, ConnectorError):
-            info = self.instance_id._kits_format_connector_error(exc)
+        instance = self._kits_get_instance()
+        if isinstance(exc, ConnectorError) and instance:
+            info = instance._kits_format_connector_error(exc)
             message = info['message']
             details = info.get('details') or traceback.format_exc()
         else:
@@ -247,25 +251,25 @@ class KitsConnectorSyncJob(models.Model):
             'state': new_state,
             'error_message': message,
             'finished_at': fields.Datetime.now() if not can_retry else False,
-            # mild backoff: push scheduled_date a few minutes ahead per attempt
             'scheduled_date': fields.Datetime.add(
                 fields.Datetime.now(),
                 minutes=min(self.attempt_count * 2, 30),
             ) if can_retry else self.scheduled_date,
         })
-        self.instance_id._kits_log_operation(
-            operation=self.job_type,
-            status='failure',
-            level='error',
-            message=message,
-            details=details,
-            job=self,
-        )
-        if self.instance_id.state == 'connected':
-            self.instance_id.write({
-                'state': 'error',
-                'last_error': message,
-            })
+        if instance:
+            instance._kits_log_operation(
+                operation=self.job_type,
+                status='failure',
+                level='error',
+                message=message,
+                details=details,
+                job=self,
+            )
+            if instance.state == 'connected':
+                instance.write({
+                    'state': 'error',
+                    'last_error': message,
+                })
         _logger.exception(
             'Connector sync job %s (%s) failed on attempt %s/%s',
             self.id,
@@ -275,27 +279,25 @@ class KitsConnectorSyncJob(models.Model):
         )
         return False
 
-    # -------------------------------------------------------------------------
-    # Cron entry point
-    # -------------------------------------------------------------------------
-
     @api.model
     def _cron_process_pending_jobs(self, batch_size=DEFAULT_BATCH_SIZE):
-        """Process due pending jobs. Called by ir.cron."""
         now = fields.Datetime.now()
         jobs = self.search(
             [
                 ('state', '=', 'pending'),
                 ('scheduled_date', '<=', now),
-                ('instance_id.active', '=', True),
             ],
             order='priority asc, scheduled_date asc, id asc',
-            limit=batch_size,
+            limit=batch_size * 2,
         )
         processed = 0
         for job in jobs:
+            if processed >= batch_size:
+                break
+            instance = job._kits_get_instance()
+            if not instance or not instance.active:
+                continue
             try:
-                # isolate each job; _process_job commits on start
                 job._process_job()
                 processed += 1
             except Exception:  # noqa: BLE001

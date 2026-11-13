@@ -26,12 +26,24 @@ from ..services.woo_oauth import apply_http_oauth
 _logger = logging.getLogger(__name__)
 
 
-class KitsConnectorInstance(models.Model):
-    _inherit = 'kits.connector.instance'
+class KitsWooInstance(models.Model):
+    _name = 'kits.woo.instance'
+    _description = 'WooCommerce Store'
+    _inherit = [
+        'kits.connector.instance.mixin',
+        'kits.connector.order.settings.mixin',
+        'kits.connector.partner.utils',
+        'kits.connector.product.utils',
+        'kits.connector.stock.utils',
+        'kits.connector.dashboard.utils',
+    ]
 
-    platform_type = fields.Selection(
-        selection_add=[('woocommerce', 'WooCommerce')],
-        ondelete={'woocommerce': 'cascade'},
+    platform_type = fields.Char(
+        default='woocommerce',
+        required=True,
+        readonly=True,
+        copy=False,
+        index=True,
     )
 
     # WooCommerce credentials (manager-only; never log values)
@@ -135,18 +147,6 @@ class KitsConnectorInstance(models.Model):
         default=False,
         help='When enabled, the scheduled cron enqueues order import jobs for this store.',
     )
-    woo_auto_import_customers = fields.Boolean(
-        string='Auto Import Customers',
-        default=False,
-        help='When enabled, the scheduled cron enqueues customer import jobs for this store.',
-    )
-    woo_update_customer_on_order_import = fields.Boolean(
-        string='Want to Update Customer While Importing Order',
-        default=False,
-        help='When enabled, re-importing or updating a WooCommerce order also refreshes '
-             'the linked customer and billing/shipping child addresses using shared '
-             'matching rules. Existing main contact fields are never overwritten.',
-    )
     woo_auto_export_stock = fields.Boolean(
         string='Auto Export Inventory',
         default=False,
@@ -159,21 +159,34 @@ class KitsConnectorInstance(models.Model):
              'under WooCommerce Stores and need sync (new / not synced / error). '
              'Products whose remote binding is Deleted Remote are not recreated.',
     )
-    woo_last_product_sync = fields.Datetime(readonly=True, copy=False)
-    woo_last_order_sync = fields.Datetime(readonly=True, copy=False)
-    woo_last_customer_sync = fields.Datetime(readonly=True, copy=False)
-    woo_last_stock_sync = fields.Datetime(readonly=True, copy=False)
+    woo_last_product_sync = fields.Datetime(
+        string='Products', readonly=True, copy=False,
+    )
+    woo_last_order_sync = fields.Datetime(
+        string='Orders', readonly=True, copy=False,
+    )
+    woo_last_customer_sync = fields.Datetime(
+        string='Customers', readonly=True, copy=False,
+    )
+    woo_last_stock_sync = fields.Datetime(
+        string='Inventory', readonly=True, copy=False,
+    )
     woo_order_import_failures = fields.Json(
         string='Pending Failed Order IDs',
         copy=False,
         help='WooCommerce order IDs that failed import and must be retried by ID '
              'so the date checkpoint does not skip them.',
     )
-    woo_imported_order_count = fields.Integer(compute='_compute_woo_counts')
-    woo_bound_product_count = fields.Integer(compute='_compute_woo_counts')
-    woo_bound_customer_count = fields.Integer(compute='_compute_woo_counts')
+    woo_imported_order_count = fields.Integer(
+        string='Imported Orders', compute='_compute_woo_counts',
+    )
+    woo_bound_product_count = fields.Integer(
+        string='Bound Products', compute='_compute_woo_counts',
+    )
+    woo_bound_customer_count = fields.Integer(
+        string='Bound Customers', compute='_compute_woo_counts',
+    )
 
-    @api.depends('binding_ids')
     def _compute_woo_counts(self):
         Binding = self.env['kits.connector.binding']
         for instance in self:
@@ -182,8 +195,9 @@ class KitsConnectorInstance(models.Model):
                 instance.woo_bound_product_count = 0
                 instance.woo_bound_customer_count = 0
                 continue
+            ref = instance._kits_instance_ref()
             instance.woo_imported_order_count = Binding.search_count([
-                ('instance_id', '=', instance.id),
+                ('instance_id', '=', ref),
                 ('odoo_model', '=', 'sale.order'),
             ])
             instance.woo_bound_product_count = self.env['kits.woo.variant.binding'].search_count([
@@ -281,9 +295,19 @@ class KitsConnectorInstance(models.Model):
         self.ensure_one()
         return (self.base_url or '').lower().startswith('http://')
 
+    @api.model_create_multi
+    def create(self, vals_list):
+        prepared = []
+        for vals in vals_list:
+            vals = dict(vals)
+            vals['platform_type'] = 'woocommerce'
+            prepared.append(vals)
+        return super().create(prepared)
+
     def write(self, vals):
         # Password widgets often submit empty strings when unchanged; do not wipe secrets.
         vals = dict(vals)
+        vals['platform_type'] = 'woocommerce'
         for fname in ('woo_consumer_key', 'woo_consumer_secret', 'api_key', 'api_secret'):
             if fname in vals and not vals[fname]:
                 vals.pop(fname)
@@ -927,7 +951,7 @@ class KitsConnectorInstance(models.Model):
             if not instance._woo_get_warehouse():
                 continue
             pending = self.env['kits.connector.sync.job'].search_count([
-                ('instance_id', '=', instance.id),
+                ('instance_id', '=', instance._kits_instance_ref()),
                 ('job_type', '=', 'woo_import_orders'),
                 ('state', 'in', ('pending', 'running')),
             ])
@@ -937,23 +961,6 @@ class KitsConnectorInstance(models.Model):
                     name=self.env._('WooCommerce: Scheduled Order Import (%s)', instance.name),
                 )
 
-        customer_instances = self.search([
-            ('platform_type', '=', 'woocommerce'),
-            ('active', '=', True),
-            ('woo_auto_import_customers', '=', True),
-        ])
-        for instance in customer_instances:
-            pending = self.env['kits.connector.sync.job'].search_count([
-                ('instance_id', '=', instance.id),
-                ('job_type', '=', 'woo_import_customers'),
-                ('state', 'in', ('pending', 'running')),
-            ])
-            if not pending:
-                instance.action_create_sync_job(
-                    'woo_import_customers',
-                    name=self.env._('WooCommerce: Scheduled Customer Import (%s)', instance.name),
-                )
-
         product_instances = self.search([
             ('platform_type', '=', 'woocommerce'),
             ('active', '=', True),
@@ -961,7 +968,7 @@ class KitsConnectorInstance(models.Model):
         ])
         for instance in product_instances:
             pending = self.env['kits.connector.sync.job'].search_count([
-                ('instance_id', '=', instance.id),
+                ('instance_id', '=', instance._kits_instance_ref()),
                 ('job_type', '=', 'woo_export_products'),
                 ('state', 'in', ('pending', 'running')),
             ])
@@ -1004,7 +1011,7 @@ class KitsConnectorInstance(models.Model):
             # Recovery: only re-export bindings that are not_synced/error.
             # Event-driven jobs already cover fresh changes; this catches leftovers.
             pending_targeted = self.env['kits.connector.sync.job'].search_count([
-                ('instance_id', '=', instance.id),
+                ('instance_id', '=', instance._kits_instance_ref()),
                 ('job_type', '=', 'woo_export_inventory'),
                 ('state', 'in', ('pending', 'running')),
             ])

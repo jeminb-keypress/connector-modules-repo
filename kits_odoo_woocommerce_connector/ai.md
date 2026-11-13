@@ -8,11 +8,11 @@
 
 Odoo 20 WooCommerce connector that syncs products, customers (import-only), sales orders, coupons, and inventory for one or more WooCommerce stores. Built as a **separate** addon under `custome/20.0/kits_odoo_woocommerce_connector` (sibling of the base connector — not nested inside it).
 
-**Current version:** `20.0.1.15.2`. Depends on base `20.0.1.9.1`.
+**Current version:** `20.0.1.19.0`. Depends on base `20.0.1.10.1` (Common Connector Library).
 
-The WooCommerce app menu is owned by this module. The base module has no menu.
+Owns concrete **`kits.woo.instance`** (connection UI, credentials, store settings). The base module has no instance model or connection menu.
 
-Depends on `kits_odoo_base_connector` for instances, HTTP client, sync jobs, logs, and bindings.
+Depends on `kits_odoo_base_connector` for the abstract instance mixin, HTTP client, sync jobs, logs, generic bindings, and helper mixins.
 
 Inspired by Emipro / TeqStars WooCommerce apps for feature shape only — **no proprietary code copied**.
 
@@ -23,19 +23,19 @@ Inspired by Emipro / TeqStars WooCommerce apps for feature shape only — **no p
 ```
 kits_odoo_woocommerce_connector
     │
-    ├─ extends kits.connector.instance   (platform=woocommerce, store settings, actions)
+    ├─ kits.woo.instance                 (owns store; inherits base instance mixin + helpers)
     ├─ extends kits.connector.sync.job   (_run_woo_* handlers)
-    ├─ kits.woo.customer.binding         (store + Woo customer id → res.partner; soft-delete)
+    ├─ kits.woo.customer.binding         (M2O → kits.woo.instance; soft-delete)
     ├─ kits.woo.customer.waiting         (queue for bulk import + customer webhooks)
-    ├─ kits.woo.product.binding          (store + Woo product id → product.template)
-    ├─ kits.woo.variant.binding          (store + Woo variation id → product.product)
+    ├─ kits.woo.webhook                  (per-topic remote webhook records + secrets)
+    ├─ kits.woo.product.binding / variant.binding
     ├─ services/woo_api.py               (REST helpers, pagination, 429 retry)
     ├─ controllers/woo_webhook.py        (public HMAC webhook endpoints)
     ├─ product.template / product.product / sale.order field extensions
     └─ cron: auto order/inventory + Process Customer Waiting List (5 min)
                  │
                  ▼
-        kits_odoo_base_connector (jobs cron, bindings, logs, HTTP)
+        kits_odoo_base_connector (mixin, jobs/logs/bindings via Reference, HTTP)
 ```
 
 ### Job types
@@ -71,7 +71,7 @@ The base module has no app menu. This module owns WooCommerce.
 6. Sync Jobs
 7. Logs
 8. Coupons
-9. Configuration: WooCommerce Settings (connector administrator)
+9. Configuration: WooCommerce Settings → standard Odoo Settings app (`res.config.settings`, module `kits_odoo_woocommerce_connector`) with instance picker + webhook switches (connector administrator). Stores remain under the Stores menu; instance form Webhooks tab retained.
 
 ### Connector Dashboard (`20.0.1.14.8`)
 
@@ -123,8 +123,9 @@ There is no generic Bindings **menu**. The store form still has a base **Binding
 | `models/kits_connector_instance_inventory.py` | Warehouse-scoped inventory export, including Export Stock From |
 | `models/kits_connector_instance_mapping.py` | CSV/Excel product mapping. Links existing products only. |
 | `models/account_move.py` | Refund in WooCommerce from a customer credit note |
-| `models/kits_connector_instance_webhook.py` | Customer webhook fields, HMAC verify, register/enqueue → waiting list |
-| `controllers/woo_webhook.py` | Public HTTP `/kits_woo/webhook/<id>/customers` (+ resource routes) |
+| `models/kits_woo_webhook.py` | Per-topic webhook records (remote id, status, secret, activate/stop/delete/refresh) |
+| `models/kits_connector_instance_webhook.py` | Four resource switches + temp fields, enable/pause/refresh orchestration, processors |
+| `controllers/woo_webhook.py` | Public HTTP `/kits_woo/webhook/<id>/<resource>` with per-webhook HMAC |
 | `models/kits_connector_sync_job.py` | `_run_woo_*` dispatch wrappers incl. waiting-list processor |
 | `models/product_*.py` / `sale_order.py` / `res_partner.py` | UI/tracking fields (`woo_is_store_customer`, Fetch, …) |
 | `tests/` | Mocked API TransactionCase + HttpCase webhook + waiting-list coverage |
@@ -155,17 +156,23 @@ Required for WooCommerce platform instances:
 - **Synchronize Weight** (`woo_sync_weight`, default False)
 - **Create Products Automatically** (`woo_create_products`, default True)
 - **Match Products by SKU** / **Allow Unmapped Order Lines**
-- **Auto Import Orders** / **Auto Import Customers** / **Auto Export Inventory** flags
-- **Want to Update Customer While Importing Order** (`woo_update_customer_on_order_import`) — when enabled, re-importing an existing order refreshes partner/addresses from Woo billing/shipping
+- **Auto Import Orders** / **Auto Export Products** / **Auto Export Inventory** flags (customers are webhook + manual/fetch only; no auto cron import)
 - **Image export media upload** (optional): WordPress username/password stored as `config_json` keys `woo_wp_username` / `woo_wp_password` for WP XML-RPC `metaWeblog.newMediaObject`. Credentials tab shows them **read-only** (password masked as `********`). Managers set/update them via **Set WordPress Media Credentials** (`kits.woo.wp.media.credentials`). Raw `config_json` is not shown on the Woo store form.
-- **Webhooks** (Webhooks tab, manager-only):
-  - `woo_webhook_public_base_url` — public HTTPS origin WooCommerce can reach (no path). Prefer a real public/tunnel host in production.
-  - Delivery URL is computed as `{base}/kits_woo/webhook/{instance_id}/customers` (resource routes under the same base).
-  - Register creates Woo topics with a shared HMAC secret. `woo_webhook_ids` (topic → remote webhook id) is **backend-only** — used by Register/Unregister; **not shown** on the form (`20.0.1.15.2`).
-  - UI shows enabled flags, public base URL, computed endpoints, and secret — not the raw topic map.
+- **Webhooks** (Webhooks tab, manager-only) — redesigned in `20.0.1.17.0`:
+  - Four **stored** switches (default False): `woo_webhook_product_enabled`, `woo_webhook_customer_enabled`, `woo_webhook_order_enabled`, `woo_webhook_coupon_enabled`.
+  - Matching **temporary** form fields (`*_tmp`) are edited on the tab; on save only **changed** switches call the API (enable → register/activate; disable → pause, never delete).
+  - **Invariant:** stored switch = user intent; `kits.woo.webhook.status` = last known WooCommerce remote state (`active`/`paused`/`disabled`). Never infer one from the other (Woo can auto-disable after 5 failed deliveries).
+  - One `kits.woo.webhook` row per `(instance, topic)` with its own secret (manager group field ACL), remote id, delivery URL, last delivery id/date, last error.
+  - Topics: `*.created` / `*.updated` / `*.deleted` for product, customer, order, coupon (12 total). No invented `restored` topics.
+  - `public_webhook_url` — optional per-store Public Webhook URL origin (no path/query/fragment). Empty → `get_base_url()` / `web.base.url`. Alias `woo_webhook_public_base_url` kept as related for compatibility.
+  - Delivery URL: `{base}/kits_woo/webhook/{instance_id}/{resource}`.
+  - Refresh Webhooks syncs remote status; 404 removes stale locals; missing remote id re-registers with saved secret.
+  - Individual Activate / Stop / Delete on each webhook row.
+  - Store deactivate: DELETE remotes then locals (retain on failure + `last_error`); clear all four switches; disable auto sync flags. Reactivate does **not** recreate webhooks.
+  - Legacy `woo_webhook_ids` / `woo_webhook_secret` / `woo_webhook_enabled` / `woo_resource_webhooks_enabled` kept for migration only.
   - **Production requires a public HTTPS Odoo URL** (or reverse proxy / tunnel).
-  - **Multi-DB Odoo:** unauthenticated POSTs must select a DB. Prefer `--db-filter` / `dbfilter` for the live DB. `?db=` alone is unreliable on Odoo 20; `X-Odoo-Database` works but Woo cannot set custom headers.
-  - **Local WordPress caveat:** WP `wp_http_validate_url` rejects `127.0.0.1` / `localhost` delivery URLs (`A valid URL was not provided`). For local live tests, either allow unsafe URLs for webhook delivery (`reject_unsafe_urls=false` via a small mu-plugin/filter) or use a non-loopback reachable host/tunnel. Point `woo_webhook_public_base_url` at Odoo directly — there is no WordPress kits proxy plugin in this environment.
+  - **Multi-DB Odoo:** prefer `--db-filter` / `dbfilter`. System param `kits_woo.webhook_db_allowlist` when using `X-Odoo-Database`.
+  - **Local WordPress caveat:** WP may reject loopback delivery URLs; see `tools/kits-allow-local-odoo-webhooks.php`.
 
 ### Credentials tab (Woo, manager-only)
 
@@ -261,7 +268,7 @@ CSV and xlsx. The header needs a WooCommerce product id (`woo_id` or `woo_produc
 6. **Webhooks**: HMAC → waiting list. Create/update accept **role=`customer` only**. After enqueue, create/update **process that pending row in the same webhook job** (near-real-time); deletes process immediately via the waiting list when a binding exists. Cron is a safety net for leftovers and failed retries. `woo_webhook_ids` stays backend-only.
 7. **Fetch Customer** — wizard by Woo id (shared matcher). **Update from WooCommerce** — linked contacts only; same non-overwrite rules as import reuse.
 8. **Guests** (`customer_id` 0) never get customer bindings.
-9. Store flag **Want to Update Customer While Importing Order** refreshes partner/addresses on existing order re-import when enabled (never overwrites name/email/phone; may add missing address children). New order import always resolves the customer even when the flag is off.
+9. **Order import customer rule (`20.0.1.16.2`):** on a **new** order, import the registered customer only when no active binding exists yet (no duplicates). If the customer already exists, reuse the binding and do not update the contact. Re-importing an existing order never refreshes partner/addresses. Guest checkout still matches by billing email or creates a guest contact (no customer binding).
 10. **Customer export is not supported.**
 11. `woo_is_store_customer` follows **active** bindings only. `woo_sync_state` aggregates active bindings; when **all** bindings are `deleted_remotely`, status is **Deleted Remotely** (not Not Linked). Customers menu lists contacts with an active binding.
 
@@ -435,6 +442,77 @@ Import reuses the store binding for the same external id. Category export create
 ---
 
 ## 12. Change log
+
+### 2026-11-12 — Sync Status labels + group layout (`20.0.1.16.6`)
+
+Sync Status page: two-column `Last Sync` / `Counts` groups (`col="2"`), full-width Order Import Failures below. Field labels cleaned (Products, Customers, Orders, … / Bound Products, Bound Customers, Imported Orders).
+
+**Files:** `views/kits_connector_instance_views.xml`, `models/kits_connector_instance.py`, `models/kits_connector_instance_catalog.py`, `models/kits_connector_instance_coupon.py`, `__manifest__.py`, `ai.md`.
+
+### 2026-11-12 — Sync Status page two-column layout (`20.0.1.16.5`)
+
+WooCommerce Sync Status now uses one outer group with **Last Sync** and **Counts** side by side (same pattern as Settings). Order import failures sit in a full-width group below.
+
+**Files:** `views/kits_connector_instance_views.xml`, `__manifest__.py`, `ai.md`.
+
+### 2026-11-12 — Remove Connection group from Sync Status (`20.0.1.16.4`)
+
+Removed the **Connection** group (`last_connection_test` / `last_error`) from the WooCommerce Sync Status page. Last Sync and Counts remain.
+
+**Files:** `views/kits_connector_instance_views.xml`, `__manifest__.py`, `ai.md`.
+
+### 2026-11-12 — Fix waiting-list cron `read_group` on Odoo 20 (`20.0.1.16.3`)
+
+`_cron_process_customer_waiting` used legacy `read_group` without aggregates, which raises on Odoo 20 (`Aggregate method is mandatory`). Replaced with `search` + `mapped('instance_id')`.
+
+**Local webhook note:** WooCommerce delivery to `http://127.0.0.1:2099/...` fails with `A valid URL was not provided` unless WordPress allows loopback (`reject_unsafe_urls=false` for `/kits_woo/webhook/`). Helper plugin: `tools/kits-allow-local-odoo-webhooks.php`.
+
+**Files:** `models/kits_woo_customer_waiting.py`, `tools/kits-allow-local-odoo-webhooks.php`, `__manifest__.py`, `ai.md`.
+
+### 2026-11-12 — Order import creates customer only when missing (`20.0.1.16.2`)
+
+**Removed**
+
+- Store flag **Want to Update Customer While Importing Order** (`woo_update_customer_on_order_import`) and its Settings UI.
+
+**Behavior**
+
+- New order import still resolves the partner; registered customers are imported only when no active binding exists.
+- Existing active binding → reuse contact, no Woo customer fetch/update, no duplicate.
+- Re-import of an already-linked order never refreshes partner or billing/shipping children.
+
+**Files:** `models/kits_connector_instance.py`, `models/kits_connector_instance_customer.py`, `models/kits_connector_instance_order.py`, `views/kits_connector_instance_views.xml`, `tests/test_woo_customer_waiting.py`, `__manifest__.py`, `ai.md`.
+
+### 2026-11-12 — Remove auto customer import cron (`20.0.1.16.1`)
+
+**Removed**
+
+- Store flag `woo_auto_import_customers` and its Settings UI.
+- Scheduler loop in `_cron_woo_schedule_jobs` that enqueued `woo_import_customers`.
+
+**Kept**
+
+- Customer webhooks, waiting-list cron, manual Import Customers / Fetch / Sync wizard.
+- Shared schedule cron still handles orders/products/stock.
+
+### 2026-11-12 — Own `kits.woo.instance` + Base Common Library (`20.0.1.16.0`)
+
+**Created / redesigned**
+
+- Concrete `kits.woo.instance` (inherits base mixin + order/partner/product/stock/dashboard helpers).
+- Primary Woo store list/form/search views (no longer inherit deleted Base instance views).
+- `migrations/20.0.1.16.0/end-migrate.py` — copy Woo rows from legacy shared instance table (preserve IDs), remap mail/attachments/References.
+
+**Modified**
+
+- All former `_inherit = 'kits.connector.instance'` → `_inherit = 'kits.woo.instance'`.
+- Dedicated M2Os stay on `kits.woo.instance`; shared jobs/logs/generic bindings use Reference strings.
+- Dashboard job domains, coupon binding lookups, webhook/job searches updated for Reference.
+- ACL for `kits.woo.instance`; cron `model_id` → `model_kits_woo_instance`.
+
+**Validation**
+
+- Upgrade + `--test-tags=/kits_odoo_woocommerce_connector` on `odoo20-connectors-woo-tests`: **0 failed, 0 error(s) of 128 tests**.
 
 ### 2026-10-27 — Initial WooCommerce connector module
 
@@ -1415,7 +1493,7 @@ Added read-only OWL dashboard (client action `kits_woo_dashboard`) with KPIs, sy
 
 **Version:** `20.0.1.15.0`.
 
-Customer sync now stages through `kits.woo.customer.waiting` (bulk import + webhooks). Process via sync job `woo_process_customer_waiting`, 5-minute cron, manual actions, and auto-trigger at 50 pending. Bindings soft-delete as `deleted_remotely`. Email matching normalizes and flags ambiguity. Orders use billing/shipping child contacts. Store flag `woo_update_customer_on_order_import`. Webhooks accept role `customer` only (bulk still `role=all`). Export remains unsupported.
+Customer sync now stages through `kits.woo.customer.waiting` (bulk import + webhooks). Process via sync job `woo_process_customer_waiting`, 5-minute cron, manual actions, and auto-trigger at 50 pending. Bindings soft-delete as `deleted_remotely`. Email matching normalizes and flags ambiguity. Orders use billing/shipping child contacts. Order import creates the customer only when missing (no update/duplicate on existing). Webhooks accept role `customer` only (bulk still `role=all`). Export remains unsupported.
 
 **Files:** `models/kits_woo_customer_waiting.py`, `models/kits_woo_customer_binding.py`, `models/kits_connector_instance_customer.py`, `models/kits_connector_instance_webhook.py`, `models/kits_connector_instance_order.py`, `models/kits_connector_instance.py`, `models/kits_connector_sync_job.py`, views/menus/security/cron/migration, `tests/test_woo_customer_waiting.py` (+ updated customer tests), `ai.md`.
 
@@ -1476,7 +1554,7 @@ Implemented the 10 customer-audit follow-ups:
 3. Role `customer` enforced on bulk import, Fetch, registered order import, and webhook create/update; deletes only when a binding exists.
 4. Hard cap of 50 rows per waiting-list process batch (bulk import no longer drains the whole queue).
 5. Delete → reimport restores the same binding (covered by test).
-6. Tests for `woo_update_customer_on_order_import` ON and OFF.
+6. Tests for order-import customer create-only-when-missing (flag removed in `20.0.1.16.2`).
 7. `remote_modified_at` on customer bindings; older webhook/waiting events skipped.
 8. Fetch wizard help corrected; partner `woo_sync_state` shows Deleted Remotely when all bindings are soft-deleted.
 9. Binding `error` / `manual_review` states wired from waiting-list failures / ambiguity.
@@ -1485,3 +1563,93 @@ Implemented the 10 customer-audit follow-ups:
 **Files:** `models/kits_woo_customer_waiting.py`, `models/kits_woo_customer_binding.py`, `models/kits_connector_instance_customer.py`, `models/kits_connector_instance_webhook.py`, `models/kits_connector_instance.py`, `models/res_partner.py`, `wizard/kits_woo_customer_fetch.py`, views, `tests/test_woo_customer_waiting.py` (+ role on sync/webhook fixtures), `__manifest__.py`, `ai.md`.
 
 **Remaining limitations:** archived contacts are still excluded from email search; waiting-list JSON payload ACL is UI-only; guest orders with no email still create unbound contacts.
+
+### 2026-11-12 — Webhook management redesign (`20.0.1.17.0`)
+
+**Version:** `20.0.1.17.0`.
+
+Replaced shared JSON webhook tracking + Register/Unregister header buttons with a full per-topic management system.
+
+**Model `kits.woo.webhook`:** name, instance (cascade), company, topic, remote `webhook_id`, status (`active`/`paused`/`disabled`), delivery_url, per-webhook secret (manager ACL), last_delivery_id/date, last_error, active. Unique `(instance_id, topic)`.
+
+**Instance switches:** four stored booleans (default False) + non-stored `*_tmp` fields on the Webhooks tab. Save diffs only changed resources; stored switch updates only after full resource success. Partial topic success keeps siblings, leaves switch off, logs + sticky bus notification (no raise, to avoid rolling back successes).
+
+**Orchestration:** enable = refresh resource → activate existing / register missing; disable = PUT paused (retain locals); Refresh button + pre-switch refresh; Activate/Stop/Delete per record; deactivate deletes remotes then locals (retain on failure), clears switches + auto jobs; reactivate does not recreate.
+
+**Incoming security:** resolve by `X-WC-Webhook-ID` → local record; verify topic, source host vs store URL, active status, per-webhook HMAC-SHA256 Base64 signature (`hmac.compare_digest`); delivery-id idempotency; DB allowlist preserved. Unknown remote ID with header present → 401 (no topic-only fallback).
+
+**Migration:** `migrations/20.0.1.17.0/end-migrate.py` copies `woo_webhook_ids` + shared secret into webhook rows, best-effort remote status GET, initializes four switches from legacy flags/topics. Legacy fields retained.
+
+**Processing:** existing customer waiting-list, product (stock stripped), order, coupon processors unchanged.
+
+**Tests:** `tests/test_woo_webhook_management.py` + updated customer/catalog/allowlist HTTP fixtures. Suite on `odoo20-connectors-woo-tests`: **0 failed, 0 error(s) of 149 tests**.
+
+**WooCommerce API limits:** no standard `restored` topics; Woo may auto-disable after five failed deliveries; disabled remotes are reactivated via PUT when supported (never duplicate-created).
+
+**Files created:** `models/kits_woo_webhook.py`, `views/kits_woo_webhook_views.xml`, `migrations/20.0.1.17.0/end-migrate.py`, `tests/test_woo_webhook_management.py`.
+
+**Files modified:** `models/kits_connector_instance_webhook.py`, `controllers/woo_webhook.py`, `models/__init__.py`, `security/ir.access.csv`, `views/kits_connector_instance_views.xml`, `__manifest__.py`, existing webhook tests, `ai.md`.
+
+### 2026-11-12 — `20.0.1.18.0` Centralized WooCommerce Settings page
+
+Added a WooCommerce section under the standard Odoo **Settings** app so managers can select a store and manage its four webhook resource switches without leaving Settings.
+
+**Settings model:** `wizard/res_config_settings.py` inherits `res.config.settings` with `woo_instance_id` (Many2one, company ACL via existing instance access domain) and four transient booleans (not `ir.config_parameter`, not related write-through). Onchange / create loads the selected instance's stored switches. `set_values()` writes only to the selected instance so the existing save-diff orchestration in `kits.woo.instance.write()` runs on Save.
+
+**UI:** `views/res_config_settings_views.xml` — Instance selector + Create More Instance (opens existing instance form) + empty-state message + Webhook Configuration block (two-column settings switches). Menu Configuration → WooCommerce Settings opens Settings focused on this app (`kits_woo_action_config_settings`).
+
+**company_id fix:** `kits.woo.webhook.company_id` now uses `precompute=True` so related company is present on INSERT (fixes re-enable after delete when `required=True`).
+
+**Tests:** `tests/test_woo_res_config_settings.py` — picker load/switch independence, save targeting, no API without instance / unchanged switches, create-instance action, company ACL, re-enable company_id.
+
+**Suite:** `odoo20-connectors-woo-tests`, `--test-tags=/kits_odoo_woocommerce_connector`: **0 failed, 0 error(s) of 161 tests**.
+
+**Files created:** `wizard/res_config_settings.py`, `views/res_config_settings_views.xml`, `tests/test_woo_res_config_settings.py`.
+
+**Files modified:** `wizard/__init__.py`, `views/kits_woocommerce_menus.xml`, `models/kits_woo_webhook.py`, `__manifest__.py`, `tests/__init__.py`, `ai.md`.
+
+### 2026-11-12 — `20.0.1.18.1` Resource switches only in Settings
+
+Removed the **Resource Webhooks** four-switch group from the store form Webhooks tab. Enable/pause of product/customer/order/coupon webhooks is done in Settings → WooCommerce. Store Webhooks tab keeps Delivery (public base URL + computed endpoints), Order Webhook Options, Refresh, and the detailed webhook list/actions.
+
+**Files modified:** `views/kits_connector_instance_views.xml`, `__manifest__.py`, `ai.md`.
+
+### 2026-11-12 — `20.0.1.18.2` Slim store Webhooks tab UI
+
+On the store Webhooks tab only: removed computed endpoint fields and Order Webhook Options. Kept Public Odoo Base URL, short help, Refresh, and per-webhook list/actions. Moved `kits_auto_confirm_order` to WooCommerce Settings → Orders & Automation (order statuses were already there). Fields/compute logic unchanged elsewhere.
+
+**Files modified:** `views/kits_connector_instance_views.xml`, `__manifest__.py`, `ai.md`.
+
+### 2026-11-12 — Fix broken button icons (dashes)
+
+Replaced invalid Odoo 20 icon names that rendered as `-` / `--`: Settings `oi-arrow-right` → `east`; webhook list `fa-refresh` → `refresh` (instance tab + webhook form).
+
+**Files modified:** `views/res_config_settings_views.xml`, `views/kits_connector_instance_views.xml`, `views/kits_woo_webhook_views.xml`, `ai.md`.
+
+### 2026-11-12 — `20.0.1.18.3` Webhook delivery uses `web.base.url`
+
+Webhook delivery base URL resolves via `_woo_get_public_base_url()`: optional per-store `woo_webhook_public_base_url` override, else system parameter `web.base.url`. Removed Delivery input from the store Webhooks tab. Existing stored overrides still win when set (tunnels).
+
+**Files modified:** `models/kits_connector_instance_webhook.py`, `models/kits_woo_webhook.py`, `views/kits_connector_instance_views.xml`, `tests/test_woo_webhook_management.py`, `__manifest__.py`, `ai.md`.
+
+### 2026-11-12 — `20.0.1.19.0` Per-store Public Webhook URL + rebuild
+
+Completed Public Webhook URL design on top of 18.3:
+
+- Stored field `public_webhook_url` (label Public Webhook URL); pre-migrate renames/copies from `woo_webhook_public_base_url`; related alias kept.
+- Fallback uses Odoo `get_base_url()` (not raw ICP only).
+- Central helper `_get_webhook_delivery_url(topic)` + existing resource routes.
+- Validation (http/https origin only; no path/query/fragment) + warnings (localhost/private/HTTP).
+- Computed `effective_webhook_base_url` / `public_webhook_url_warning`.
+- Settings → WooCommerce exposes Public Webhook URL, effective URL, warning, and **Rebuild Webhook Delivery URLs** (PUT existing remotes; preserve id/secret; skip unchanged; no auto-migrate remote updates).
+- Store Webhooks tab stays operational only: Refresh + per-webhook list/actions (no Delivery group / Rebuild duplicate).
+- Registration uses `_get_webhook_delivery_url`; refresh still pulls remote status/URL and does not push local URL changes.
+- **Enable / re-enable** compares each local `delivery_url` to `_get_webhook_delivery_url(topic)` and **PUTs** via `_woo_register_remote()` when they differ (does not refresh-first in a way that keeps Woo on the old public URL). Unknown resource keys raise instead of no-op.
+
+**Files created:** `migrations/20.0.1.19.0/pre-migrate.py`, `tests/test_woo_public_webhook_url.py`.
+
+**Live verification (DB `odoo-20`, Local Woo Store → `localhost/wordpress`):** rebuild same-URL skipped; rebuild after Public URL change updated 6 remotes via PUT (ids/secrets kept); GET probe 200; invalid HMAC 401; valid HMAC accepted; duplicate delivery_id ignored; re-enable after URL change PUT 3 customer remotes. Port `2099` process was stale (POST 500); live HTTP confirmed on temporary `:2102`.
+
+**Suite:** `odoo20-connectors-woo-tests`, `--test-tags=/kits_odoo_woocommerce_connector`: **0 failed, 0 error(s) of 177 tests** (after enable-url-push + multi-store rebuild regression tests).
+
+**Files modified:** `models/kits_connector_instance_webhook.py`, `models/kits_woo_webhook.py`, `wizard/res_config_settings.py`, `views/res_config_settings_views.xml`, `views/kits_connector_instance_views.xml`, `tests/__init__.py`, `tests/test_woo_webhook_management.py`, `tests/test_woo_public_webhook_url.py`, `__manifest__.py`, `ai.md`.

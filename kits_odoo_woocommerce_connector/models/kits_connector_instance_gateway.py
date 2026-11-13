@@ -9,7 +9,7 @@ _logger = logging.getLogger(__name__)
 
 
 class KitsConnectorInstanceGateway(models.Model):
-    _inherit = 'kits.connector.instance'
+    _inherit = 'kits.woo.instance'
 
     woo_payment_gateway_map_ids = fields.One2many(
         'kits.woo.payment.gateway.map',

@@ -9,7 +9,7 @@ class KitsWooShippingMethodMap(models.Model):
     _check_company_auto = True
 
     instance_id = fields.Many2one(
-        'kits.connector.instance',
+        'kits.woo.instance',
         required=True,
         ondelete='cascade',
         index=True,

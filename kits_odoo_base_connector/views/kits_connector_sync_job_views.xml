@@ -73,9 +73,6 @@
                         </group>
                     </group>
                     <notebook>
-                        <page string="Payload" name="payload">
-                            <field name="payload"/>
-                        </page>
                         <page string="Result" name="result">
                             <field name="result_summary"/>
                             <field name="error_message"/>

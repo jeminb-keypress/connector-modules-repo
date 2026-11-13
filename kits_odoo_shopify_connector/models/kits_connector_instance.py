@@ -25,12 +25,17 @@ SHOPIFY_API_VERSION_DEFAULT = '2026-10'
 _SHOP_HANDLE = re.compile(r'[a-z0-9](?:[a-z0-9-]{0,58}[a-z0-9])?')
 
 
-class KitsConnectorInstance(models.Model):
-    _inherit = 'kits.connector.instance'
+class KitsShopifyInstance(models.Model):
+    _name = 'kits.shopify.instance'
+    _description = 'Shopify Store'
+    _inherit = ['kits.connector.instance.mixin']
 
-    platform_type = fields.Selection(
-        selection_add=[('shopify', 'Shopify')],
-        ondelete={'shopify': 'cascade'},
+    platform_type = fields.Char(
+        default='shopify',
+        required=True,
+        readonly=True,
+        copy=False,
+        index=True,
     )
     shopify_shop_domain = fields.Char(
         string='Shop Domain',
@@ -86,6 +91,7 @@ class KitsConnectorInstance(models.Model):
 
     def _shopify_clean_vals(self, vals):
         vals = dict(vals)
+        vals['platform_type'] = 'shopify'
         if 'shopify_access_token' in vals:
             token = (vals.get('shopify_access_token') or '').strip()
             if not token:
@@ -101,9 +107,6 @@ class KitsConnectorInstance(models.Model):
 
     def _shopify_with_base_url(self, vals, record=None):
         """Store the Admin API root on ``base_url`` for Shopify instances."""
-        platform = vals.get('platform_type') or (record.platform_type if record else False)
-        if platform != 'shopify':
-            return vals
         domain = vals.get('shopify_shop_domain')
         if domain is None and record is not None:
             domain = record.shopify_shop_domain
@@ -134,7 +137,7 @@ class KitsConnectorInstance(models.Model):
         )):
             for record in self:
                 rec_vals = record._shopify_with_base_url(dict(vals), record)
-                super(KitsConnectorInstance, record).write(rec_vals)
+                super(KitsShopifyInstance, record).write(rec_vals)
             return True
         return super().write(vals)
 
@@ -156,14 +159,10 @@ class KitsConnectorInstance(models.Model):
 
     def _kits_get_base_url(self):
         self.ensure_one()
-        if self._is_shopify():
-            return self._shopify_api_root() or super()._kits_get_base_url()
-        return super()._kits_get_base_url()
+        return self._shopify_api_root() or super()._kits_get_base_url()
 
     def _kits_get_default_headers(self):
         headers = super()._kits_get_default_headers()
-        if self.platform_type != 'shopify':
-            return headers
         headers = dict(headers)
         headers['User-Agent'] = 'KitsOdooShopifyConnector/20.0'
         return headers
@@ -201,8 +200,6 @@ class KitsConnectorInstance(models.Model):
 
     def _kits_get_auth_headers(self, method, url, headers, kwargs):
         self.ensure_one()
-        if not self._is_shopify():
-            return super()._kits_get_auth_headers(method, url, headers, kwargs)
         result = dict(headers or {})
         # Do not send the generic Bearer api_key on Shopify calls.
         result.pop('Authorization', None)
@@ -211,16 +208,10 @@ class KitsConnectorInstance(models.Model):
 
     def _shopify_api(self):
         self.ensure_one()
-        if not self._is_shopify():
-            raise ConnectorError(self.env._(
-                'This action is only available for Shopify instances.'
-            ))
         return ShopifyGraphQLClient(self)
 
     def _kits_test_connection(self):
         self.ensure_one()
-        if not self._is_shopify():
-            return super()._kits_test_connection()
         self._shopify_require_config()
         try:
             payload = self._shopify_api().execute(SHOP_CONNECTION_QUERY)

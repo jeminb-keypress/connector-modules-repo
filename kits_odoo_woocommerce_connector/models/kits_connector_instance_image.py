@@ -24,7 +24,7 @@ _logger = logging.getLogger(__name__)
 
 
 class KitsConnectorInstanceImage(models.Model):
-    _inherit = 'kits.connector.instance'
+    _inherit = 'kits.woo.instance'
 
     def _woo_has_product_gallery(self):
         """True when the native product.image gallery model is available."""

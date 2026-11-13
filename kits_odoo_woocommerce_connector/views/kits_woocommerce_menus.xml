@@ -165,7 +165,7 @@
     <menuitem id="kits_woo_menu_config_stores"
               name="WooCommerce Settings"
               parent="kits_woo_menu_config"
-              action="kits_woo_instance_action"
+              action="kits_woo_action_config_settings"
               sequence="10"
               groups="kits_odoo_base_connector.group_kits_connector_manager"/>
 </odoo>

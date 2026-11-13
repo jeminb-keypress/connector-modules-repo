@@ -16,11 +16,12 @@ class KitsConnectorBinding(models.Model):
     _check_company_auto = True
     _rec_name = 'external_id'
 
-    instance_id = fields.Many2one(
-        'kits.connector.instance',
+    instance_id = fields.Reference(
+        selection='_kits_selection_instance_models',
+        string='Store / Instance',
         required=True,
         index=True,
-        ondelete='cascade',
+        help='Platform instance as model,id (e.g. kits.woo.instance,12).',
     )
     company_id = fields.Many2one(
         'res.company',
@@ -28,11 +29,7 @@ class KitsConnectorBinding(models.Model):
         index=True,
         default=lambda self: self.env.company,
     )
-    platform_type = fields.Selection(
-        related='instance_id.platform_type',
-        store=True,
-        readonly=True,
-    )
+    platform_type = fields.Char(string='Platform', index=True)
     odoo_model = fields.Char(
         string='Odoo Model',
         required=True,
@@ -95,17 +92,40 @@ class KitsConnectorBinding(models.Model):
         'This Odoo record is already bound for the connector instance.',
     )
 
+    @api.model
+    def _kits_selection_instance_models(self):
+        return self.env['kits.connector.sync.job']._kits_selection_instance_models()
+
+    def _kits_get_instance(self):
+        self.ensure_one()
+        return self.env['kits.connector.instance.mixin']._kits_browse_instance_ref(
+            self.instance_id,
+        )
+
+    @api.model
+    def _kits_instance_domain(self, instance):
+        """Domain fragment matching shared bindings for a platform instance."""
+        if not instance:
+            return [('id', '=', 0)]
+        return [('instance_id', '=', instance._kits_instance_ref())]
+
     @api.onchange('instance_id')
     def _onchange_instance_id(self):
-        if self.instance_id:
-            self.company_id = self.instance_id.company_id
+        instance = self._kits_get_instance() if self.instance_id else False
+        if instance:
+            self.company_id = instance.company_id
+            self.platform_type = getattr(instance, 'platform_type', False)
 
     @api.model_create_multi
     def create(self, vals_list):
+        Mixin = self.env['kits.connector.instance.mixin']
         for vals in vals_list:
-            if vals.get('instance_id') and not vals.get('company_id'):
-                instance = self.env['kits.connector.instance'].browse(vals['instance_id'])
-                vals['company_id'] = instance.company_id.id
+            ref = vals.get('instance_id')
+            instance = Mixin._kits_browse_instance_ref(ref) if ref else Mixin.browse()
+            if instance:
+                vals['instance_id'] = instance._kits_instance_ref()
+                vals.setdefault('company_id', instance.company_id.id)
+                vals.setdefault('platform_type', instance.platform_type)
         return super().create(vals_list)
 
     @api.constrains('odoo_record_id', 'odoo_model')
@@ -135,8 +155,7 @@ class KitsConnectorBinding(models.Model):
         """Find an existing binding by external ID and/or Odoo record ID."""
         if not instance:
             raise UserError(self.env._('A connector instance is required to resolve bindings.'))
-        domain = [
-            ('instance_id', '=', instance.id),
+        domain = self._kits_instance_domain(instance) + [
             ('odoo_model', '=', odoo_model),
         ]
         if external_id:
@@ -157,6 +176,7 @@ class KitsConnectorBinding(models.Model):
             ))
         external_id = str(external_id)
         odoo_record_id = int(odoo_record_id)
+        instance_ref = instance._kits_instance_ref()
 
         existing_ext = self._kits_find_binding(instance, odoo_model, external_id=external_id)
         existing_odoo = self._kits_find_binding(
@@ -174,8 +194,9 @@ class KitsConnectorBinding(models.Model):
 
         binding = existing_ext or existing_odoo
         vals = {
-            'instance_id': instance.id,
+            'instance_id': instance_ref,
             'company_id': instance.company_id.id,
+            'platform_type': getattr(instance, 'platform_type', False),
             'odoo_model': odoo_model,
             'odoo_record_id': odoo_record_id,
             'external_id': external_id,
@@ -188,16 +209,17 @@ class KitsConnectorBinding(models.Model):
             vals['external_data'] = external_data
 
         if binding:
-            # Guard against remapping an existing external ID onto another Odoo record
             if binding.odoo_record_id != odoo_record_id or binding.external_id != external_id:
-                conflict = self.search([
-                    ('instance_id', '=', instance.id),
-                    ('odoo_model', '=', odoo_model),
-                    ('id', '!=', binding.id),
-                    '|',
-                    ('external_id', '=', external_id),
-                    ('odoo_record_id', '=', odoo_record_id),
-                ], limit=1)
+                conflict = self.search(
+                    self._kits_instance_domain(instance) + [
+                        ('odoo_model', '=', odoo_model),
+                        ('id', '!=', binding.id),
+                        '|',
+                        ('external_id', '=', external_id),
+                        ('odoo_record_id', '=', odoo_record_id),
+                    ],
+                    limit=1,
+                )
                 if conflict:
                     raise UserError(self.env._(
                         'Cannot update binding: another binding already uses this mapping.'
@@ -306,7 +328,7 @@ class KitsConnectorBinding(models.Model):
             ('sync_state', 'not in', ('deleted', 'deleted_local')),
         ]
         if instance:
-            domain.append(('instance_id', '=', instance.id))
+            domain += self._kits_instance_domain(instance)
         if company:
             domain.append(('company_id', '=', company.id))
         bindings = self.search(domain)

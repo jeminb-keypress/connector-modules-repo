@@ -1,4 +1,11 @@
 # -*- coding: utf-8 -*-
+"""Abstract connector instance mixin — Common Connector Library.
+
+Platform modules define their own concrete instance models
+(``kits.woo.instance``, ``kits.shopify.instance``, …) that inherit this mixin.
+Base never owns a concrete store/instance model or connection UI.
+"""
+
 from odoo import api, fields, models
 from odoo.exceptions import UserError
 
@@ -6,21 +13,21 @@ from ..services.exceptions import ConnectorError
 from ..services.http_client import DEFAULT_TIMEOUT, ConnectorHttpClient
 
 
-class KitsConnectorInstance(models.Model):
-    _name = 'kits.connector.instance'
-    _description = 'Connector Instance'
+class KitsConnectorInstanceMixin(models.AbstractModel):
+    _name = 'kits.connector.instance.mixin'
+    _description = 'Kits Connector Instance Mixin'
     _inherit = ['mail.thread', 'mail.activity.mixin', 'kits.connector.api.mixin']
     _order = 'name, id'
     _check_company_auto = True
 
     name = fields.Char(required=True, tracking=True)
-    platform_type = fields.Selection(
-        selection=[('generic', 'Generic')],
+    platform_type = fields.Char(
         string='Platform',
         required=True,
-        default='generic',
+        index=True,
         tracking=True,
-        help='Technical platform key. Platform modules extend this via selection_add.',
+        help='Technical platform key set by the concrete instance model '
+             '(e.g. woocommerce, shopify).',
     )
     company_id = fields.Many2one(
         'res.company',
@@ -57,13 +64,13 @@ class KitsConnectorInstance(models.Model):
         string='API Key',
         copy=False,
         groups='kits_odoo_base_connector.group_kits_connector_manager',
-        help='Generic credential slot. Prefer platform-specific fields in dependent modules.',
+        help='Optional generic credential slot. Prefer platform-specific fields.',
     )
     api_secret = fields.Char(
         string='API Secret',
         copy=False,
         groups='kits_odoo_base_connector.group_kits_connector_manager',
-        help='Generic secret slot. Prefer platform-specific fields in dependent modules.',
+        help='Optional generic secret slot. Prefer platform-specific fields.',
     )
     config_json = fields.Json(
         string='Extra Configuration',
@@ -71,49 +78,80 @@ class KitsConnectorInstance(models.Model):
     )
     last_connection_test = fields.Datetime(readonly=True, copy=False)
     last_error = fields.Text(readonly=True, copy=False)
-    sync_job_ids = fields.One2many('kits.connector.sync.job', 'instance_id', string='Sync Jobs')
-    log_ids = fields.One2many('kits.connector.log', 'instance_id', string='Logs')
-    binding_ids = fields.One2many('kits.connector.binding', 'instance_id', string='Bindings')
-    sync_job_count = fields.Integer(compute='_compute_counts')
-    log_count = fields.Integer(compute='_compute_counts')
-    binding_count = fields.Integer(compute='_compute_counts')
     notes = fields.Text()
+    sync_job_count = fields.Integer(compute='_compute_kits_related_counts')
+    log_count = fields.Integer(compute='_compute_kits_related_counts')
+    binding_count = fields.Integer(compute='_compute_kits_related_counts')
 
-    _name_company_uniq = models.Constraint(
-        'UNIQUE(name, company_id)',
-        'A connector instance with this name already exists for the company.',
-    )
-
-    @api.depends('sync_job_ids', 'log_ids', 'binding_ids')
-    def _compute_counts(self):
-        job_data = self.env['kits.connector.sync.job']._read_group(
-            [('instance_id', 'in', self.ids)],
-            ['instance_id'],
-            ['__count'],
-        )
-        log_data = self.env['kits.connector.log']._read_group(
-            [('instance_id', 'in', self.ids)],
-            ['instance_id'],
-            ['__count'],
-        )
-        binding_data = self.env['kits.connector.binding']._read_group(
-            [('instance_id', 'in', self.ids)],
-            ['instance_id'],
-            ['__count'],
-        )
-        job_map = {instance.id: count for instance, count in job_data}
-        log_map = {instance.id: count for instance, count in log_data}
-        binding_map = {instance.id: count for instance, count in binding_data}
+    def _compute_kits_related_counts(self):
+        Job = self.env['kits.connector.sync.job']
+        Log = self.env['kits.connector.log']
+        Binding = self.env['kits.connector.binding']
         for instance in self:
-            instance.sync_job_count = job_map.get(instance.id, 0)
-            instance.log_count = log_map.get(instance.id, 0)
-            instance.binding_count = binding_map.get(instance.id, 0)
+            ref = instance._kits_instance_ref()
+            instance.sync_job_count = Job.search_count([('instance_id', '=', ref)])
+            instance.log_count = Log.search_count([('instance_id', '=', ref)])
+            instance.binding_count = Binding.search_count([('instance_id', '=', ref)])
 
     @api.constrains('timeout')
     def _check_timeout(self):
         for instance in self:
             if instance.timeout is not None and instance.timeout <= 0:
                 raise UserError(self.env._('HTTP timeout must be a positive number of seconds.'))
+
+    # -------------------------------------------------------------------------
+    # Reference helpers (jobs / logs / generic bindings)
+    # -------------------------------------------------------------------------
+
+    def _kits_instance_ref(self):
+        """Return the Reference string ``model,id`` for shared job/log/binding rows."""
+        self.ensure_one()
+        return f'{self._name},{self.id}'
+
+    @api.model
+    def _kits_browse_instance_ref(self, ref):
+        """Browse an instance from a Reference string, recordset, or bare id."""
+        if not ref:
+            return self.browse()
+        if isinstance(ref, models.BaseModel):
+            return ref.exists() if hasattr(ref, 'exists') else ref
+        if isinstance(ref, int):
+            for model_name in ('kits.woo.instance', 'kits.shopify.instance'):
+                if model_name in self.env:
+                    record = self.env[model_name].browse(ref).exists()
+                    if record:
+                        return record
+            return self.browse()
+        text = str(ref).strip()
+        if text.isdigit():
+            return self._kits_browse_instance_ref(int(text))
+        if ',' not in text:
+            return self.browse()
+        model_name, _, res_id = text.partition(',')
+        if model_name not in self.env or not res_id.isdigit():
+            return self.browse()
+        return self.env[model_name].browse(int(res_id)).exists()
+
+    @api.model
+    def _kits_normalize_instance_ref(self, ref):
+        """Return a ``model,id`` Reference string from any accepted instance value."""
+        instance = self._kits_browse_instance_ref(ref)
+        return instance._kits_instance_ref() if instance else False
+
+    def unlink(self):
+        """Remove shared jobs/logs/bindings that Reference this instance."""
+        refs = [rec._kits_instance_ref() for rec in self]
+        if refs:
+            self.env['kits.connector.sync.job'].sudo().search([
+                ('instance_id', 'in', refs),
+            ]).unlink()
+            self.env['kits.connector.log'].sudo().search([
+                ('instance_id', 'in', refs),
+            ]).unlink()
+            self.env['kits.connector.binding'].sudo().search([
+                ('instance_id', 'in', refs),
+            ]).unlink()
+        return super().unlink()
 
     # -------------------------------------------------------------------------
     # Connection management
@@ -171,15 +209,10 @@ class KitsConnectorInstance(models.Model):
         return True
 
     def _kits_test_connection(self):
-        """Platform hook for connection testing.
-
-        The generic implementation only validates that a base URL is configured.
-        Platform modules must override this with a real lightweight API call.
-        """
+        """Platform hook for connection testing."""
         self.ensure_one()
         if not self.base_url:
             raise ConnectorError(self.env._('Base URL is required to test the connection.'))
-        # Generic connector does not call remote APIs. Dependent modules override.
         return True
 
     # -------------------------------------------------------------------------
@@ -189,15 +222,13 @@ class KitsConnectorInstance(models.Model):
     def action_create_sync_job(self, job_type, *, name=False, payload=None,
                                scheduled_date=False, max_retries=3, priority=10,
                                enqueue=True):
-        """Create a sync job for this instance.
-
-        Returns the created ``kits.connector.sync.job`` recordset (one record).
-        """
+        """Create a sync job linked to this platform instance via Reference."""
         self.ensure_one()
         vals = {
             'name': name or self.env._('Sync: %(job_type)s', job_type=job_type),
-            'instance_id': self.id,
+            'instance_id': self._kits_instance_ref(),
             'company_id': self.company_id.id,
+            'platform_type': self.platform_type,
             'job_type': job_type,
             'payload': payload or {},
             'scheduled_date': scheduled_date or fields.Datetime.now(),
@@ -217,8 +248,9 @@ class KitsConnectorInstance(models.Model):
         self.ensure_one()
         return self.env['kits.connector.log'].sudo().create({
             'name': operation,
-            'instance_id': self.id,
+            'instance_id': self._kits_instance_ref(),
             'company_id': self.company_id.id,
+            'platform_type': self.platform_type,
             'job_id': job.id if job else False,
             'level': level,
             'status': status,
@@ -234,53 +266,74 @@ class KitsConnectorInstance(models.Model):
 
     def action_view_sync_jobs(self):
         self.ensure_one()
+        ref = self._kits_instance_ref()
         return {
             'type': 'ir.actions.act_window',
             'name': self.env._('Sync Jobs'),
             'res_model': 'kits.connector.sync.job',
             'view_mode': 'list,form',
-            'domain': [('instance_id', '=', self.id)],
+            'domain': [('instance_id', '=', ref)],
             'context': {
-                'default_instance_id': self.id,
+                'default_instance_id': ref,
                 'default_company_id': self.company_id.id,
+                'default_platform_type': self.platform_type,
             },
         }
 
     def action_view_logs(self):
         self.ensure_one()
+        ref = self._kits_instance_ref()
         return {
             'type': 'ir.actions.act_window',
             'name': self.env._('Connector Logs'),
             'res_model': 'kits.connector.log',
             'view_mode': 'list,form',
-            'domain': [('instance_id', '=', self.id)],
+            'domain': [('instance_id', '=', ref)],
             'context': {
-                'default_instance_id': self.id,
+                'default_instance_id': ref,
                 'default_company_id': self.company_id.id,
+                'default_platform_type': self.platform_type,
             },
         }
 
     def action_view_bindings(self):
         self.ensure_one()
+        ref = self._kits_instance_ref()
         return {
             'type': 'ir.actions.act_window',
             'name': self.env._('External Bindings'),
             'res_model': 'kits.connector.binding',
             'view_mode': 'list,form',
-            'domain': [('instance_id', '=', self.id)],
+            'domain': [('instance_id', '=', ref)],
             'context': {
-                'default_instance_id': self.id,
+                'default_instance_id': ref,
                 'default_company_id': self.company_id.id,
+                'default_platform_type': self.platform_type,
             },
         }
 
-    @api.model
-    def _cron_woo_schedule_jobs(self):
-        """No-op stub for WooCommerce auto-schedule cron.
+    # -------------------------------------------------------------------------
+    # Scheduler helpers
+    # -------------------------------------------------------------------------
 
-        Platform module ``kits_odoo_woocommerce_connector`` overrides this with
-        the real scheduler. The stub exists so multi-database cron workers do
-        not fail with AttributeError on databases where the Woo module is not
-        installed but a leftover Woo cron record still exists.
-        """
-        return True
+    def _kits_has_pending_job(self, job_type):
+        """Return True when this instance already has a pending/running job of this type."""
+        self.ensure_one()
+        return bool(self.env['kits.connector.sync.job'].search_count([
+            ('instance_id', '=', self._kits_instance_ref()),
+            ('job_type', '=', job_type),
+            ('state', 'in', ('pending', 'running')),
+        ]))
+
+    def _kits_enqueue_if_enabled(self, flag_field, job_type, *, name=False, payload=None):
+        """Enqueue ``job_type`` when ``flag_field`` is set and no duplicate is pending."""
+        self.ensure_one()
+        if not getattr(self, flag_field, False):
+            return self.env['kits.connector.sync.job']
+        if self._kits_has_pending_job(job_type):
+            return self.env['kits.connector.sync.job']
+        return self.action_create_sync_job(
+            job_type,
+            name=name or self.env._('%(job)s (%(store)s)', job=job_type, store=self.name),
+            payload=payload or {},
+        )

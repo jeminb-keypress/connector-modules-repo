@@ -11,9 +11,11 @@ _logger = logging.getLogger(__name__)
 
 
 class KitsConnectorInstanceCoupon(models.Model):
-    _inherit = 'kits.connector.instance'
+    _inherit = 'kits.woo.instance'
 
-    woo_last_coupon_sync = fields.Datetime(readonly=True, copy=False)
+    woo_last_coupon_sync = fields.Datetime(
+        string='Coupons', readonly=True, copy=False,
+    )
 
     def action_woo_import_coupons(self):
         self._ensure_woo_ready()

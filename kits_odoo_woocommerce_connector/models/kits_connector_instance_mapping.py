@@ -28,7 +28,7 @@ _HEADER_ALIASES = {
 
 
 class KitsConnectorInstanceMapping(models.Model):
-    _inherit = 'kits.connector.instance'
+    _inherit = 'kits.woo.instance'
 
     def _woo_map_products(self, content, filename):
         """Link existing Odoo products to existing WooCommerce ids. Create nothing."""

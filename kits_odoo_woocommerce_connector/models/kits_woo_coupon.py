@@ -14,7 +14,7 @@ class KitsWooCoupon(models.Model):
     name = fields.Char(required=True)
     code = fields.Char(required=True, index=True)
     instance_id = fields.Many2one(
-        'kits.connector.instance',
+        'kits.woo.instance',
         required=True,
         ondelete='cascade',
         index=True,
@@ -138,7 +138,7 @@ class KitsWooCoupon(models.Model):
     def create(self, vals_list):
         for vals in vals_list:
             if vals.get('instance_id') and not vals.get('company_id'):
-                instance = self.env['kits.connector.instance'].browse(vals['instance_id'])
+                instance = self.env['kits.woo.instance'].browse(vals['instance_id'])
                 vals['company_id'] = instance.company_id.id
             if vals.get('code'):
                 vals['code'] = vals['code'].strip()
@@ -158,11 +158,13 @@ class KitsWooCoupon(models.Model):
     def _compute_woo_external_id(self):
         Binding = self.env['kits.connector.binding']
         for coupon in self:
-            binding = Binding.search([
-                ('instance_id', '=', coupon.instance_id.id),
-                ('odoo_model', '=', 'kits.woo.coupon'),
-                ('odoo_record_id', '=', coupon.id),
-            ], limit=1)
+            if not coupon.instance_id:
+                coupon.woo_external_id = False
+                coupon.sync_state = 'not_synced'
+                continue
+            binding = Binding._kits_find_binding(
+                coupon.instance_id, 'kits.woo.coupon', odoo_record_id=coupon.id,
+            )
             coupon.woo_external_id = binding.external_id if binding else False
             coupon.sync_state = binding.sync_state if binding else 'not_synced'
 
@@ -182,11 +184,11 @@ class KitsWooCoupon(models.Model):
         if mapped.intersection(vals):
             Binding = self.env['kits.connector.binding']
             for coupon in self:
-                binding = Binding.search([
-                    ('instance_id', '=', coupon.instance_id.id),
-                    ('odoo_model', '=', 'kits.woo.coupon'),
-                    ('odoo_record_id', '=', coupon.id),
-                ], limit=1)
+                if not coupon.instance_id:
+                    continue
+                binding = Binding._kits_find_binding(
+                    coupon.instance_id, 'kits.woo.coupon', odoo_record_id=coupon.id,
+                )
                 if binding:
                     binding._kits_mark_not_synced()
         return res

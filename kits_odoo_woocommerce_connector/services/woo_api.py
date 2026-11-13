@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 """WooCommerce REST API helpers built on the base connector HTTP client.
 
-All methods expect an ``kits.connector.instance`` record already configured for
+All methods expect an ``kits.woo.instance`` record already configured for
 WooCommerce. Secrets must never be written to logs by callers.
 """
 

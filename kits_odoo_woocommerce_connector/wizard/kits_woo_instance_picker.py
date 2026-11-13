@@ -15,7 +15,7 @@ class KitsWooInstancePicker(models.TransientModel):
         required=True,
     )
     instance_id = fields.Many2one(
-        'kits.connector.instance',
+        'kits.woo.instance',
         string='WooCommerce Store',
         required=True,
         domain="[('platform_type', '=', 'woocommerce'), ('active', '=', True)]",

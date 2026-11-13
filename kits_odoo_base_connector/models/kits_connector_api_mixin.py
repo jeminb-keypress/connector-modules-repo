@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 """API mixin providing reusable HTTP helpers for connector models.
 
-Platform modules typically inherit :class:`kits.connector.instance` (which
+Platform modules typically inherit :class:`kits.connector.instance.mixin` (which
 already includes this mixin) and override authentication / validation hooks.
 Other models may also inherit the mixin when they need direct HTTP access.
 """

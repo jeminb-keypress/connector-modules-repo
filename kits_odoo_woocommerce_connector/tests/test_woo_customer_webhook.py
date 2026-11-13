@@ -56,7 +56,7 @@ class TestWooCustomerWebhook(WooConnectorCommon):
         )
 
     def test_created_webhook_creates_partner_binding_only(self):
-        other = self.env['kits.connector.instance'].create({
+        other = self.env['kits.woo.instance'].create({
             'name': 'Webhook Store B',
             'platform_type': 'woocommerce',
             'company_id': self.company.id,
@@ -236,14 +236,19 @@ class TestWooCustomerWebhook(WooConnectorCommon):
     def test_register_webhooks_calls_api(self):
         api = MagicMock()
         api.create_webhook.side_effect = [
-            {'id': 11}, {'id': 12}, {'id': 13},
+            {'id': 11, 'status': 'active'},
+            {'id': 12, 'status': 'active'},
+            {'id': 13, 'status': 'active'},
         ]
         with self._patch_api(api):
-            self.instance.action_woo_register_customer_webhooks()
+            self.instance.write({'woo_webhook_customer_enabled': True})
         self.assertEqual(api.create_webhook.call_count, 3)
-        self.assertTrue(self.instance.woo_webhook_enabled)
+        self.assertTrue(self.instance.woo_webhook_customer_enabled)
+        records = self.env['kits.woo.webhook'].search([
+            ('instance_id', '=', self.instance.id),
+        ])
         self.assertEqual(
-            set((self.instance.woo_webhook_ids or {}).keys()),
+            set(records.mapped('topic')),
             {'customer.created', 'customer.updated', 'customer.deleted'},
         )
         topics = [c.args[0]['topic'] for c in api.create_webhook.call_args_list]
@@ -257,7 +262,7 @@ class TestWooCustomerWebhook(WooConnectorCommon):
                 payload['delivery_url'],
                 self.instance.woo_webhook_endpoint_url,
             )
-            self.assertEqual(payload['secret'], self.instance.woo_webhook_secret)
+            self.assertTrue(payload['secret'])
 
 
 @tagged('post_install', '-at_install', 'kits_woo')
@@ -268,7 +273,7 @@ class TestWooCustomerWebhookHttp(HttpCase):
         warehouse = self.env['stock.warehouse'].search(
             [('company_id', '=', self.env.company.id)], limit=1,
         )
-        self.instance = self.env['kits.connector.instance'].create({
+        self.instance = self.env['kits.woo.instance'].create({
             'name': 'HTTP Woo Webhook Store',
             'platform_type': 'woocommerce',
             'company_id': self.env.company.id,
@@ -279,6 +284,17 @@ class TestWooCustomerWebhookHttp(HttpCase):
             'state': 'connected',
             'woo_webhook_public_base_url': 'http://127.0.0.1',
             'woo_webhook_secret': 'http-secret',
+        })
+        self.webhook = self.env['kits.woo.webhook'].create({
+            'name': 'Customer Created',
+            'instance_id': self.instance.id,
+            'topic': 'customer.created',
+            'webhook_id': '701',
+            'delivery_url': (
+                f'{self.instance.woo_webhook_resource_base_url}/customers'
+            ),
+            'secret': 'http-secret',
+            'status': 'active',
         })
 
     def _sign(self, body: bytes) -> str:
@@ -295,6 +311,8 @@ class TestWooCustomerWebhookHttp(HttpCase):
                 'Content-Type': 'application/json',
                 'X-WC-Webhook-Signature': 'invalid',
                 'X-WC-Webhook-Topic': 'customer.created',
+                'X-WC-Webhook-ID': '701',
+                'X-WC-Webhook-Source': 'https://woo.http.test',
                 'X-WC-Webhook-Delivery-ID': 'http-1',
             },
         )
@@ -319,13 +337,15 @@ class TestWooCustomerWebhookHttp(HttpCase):
                 'Content-Type': 'application/json',
                 'X-WC-Webhook-Signature': self._sign(body),
                 'X-WC-Webhook-Topic': 'customer.created',
+                'X-WC-Webhook-ID': '701',
+                'X-WC-Webhook-Source': 'https://woo.http.test',
                 'X-WC-Webhook-Delivery-ID': 'http-2',
             },
         )
         self.assertEqual(response.status_code, 200)
         self.assertIn(b'accepted', response.content)
         job = self.env['kits.connector.sync.job'].search([
-            ('instance_id', '=', self.instance.id),
+            ('instance_id', '=', self.instance._kits_instance_ref()),
             ('job_type', '=', 'woo_webhook_customer'),
         ], limit=1)
         self.assertTrue(job)

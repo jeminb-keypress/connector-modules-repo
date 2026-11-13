@@ -21,7 +21,7 @@ class KitsWooProductBinding(models.Model):
     _check_company_auto = True
 
     instance_id = fields.Many2one(
-        'kits.connector.instance',
+        'kits.woo.instance',
         string='WooCommerce Store',
         required=True,
         index=True,
@@ -111,7 +111,7 @@ class KitsWooProductBinding(models.Model):
     def create(self, vals_list):
         for vals in vals_list:
             if vals.get('instance_id') and not vals.get('company_id'):
-                instance = self.env['kits.connector.instance'].browse(vals['instance_id'])
+                instance = self.env['kits.woo.instance'].browse(vals['instance_id'])
                 vals['company_id'] = instance.company_id.id
             if vals.get('external_id'):
                 vals['external_id'] = str(vals['external_id'])
@@ -169,7 +169,7 @@ class KitsWooVariantBinding(models.Model):
         ondelete='cascade',
     )
     instance_id = fields.Many2one(
-        'kits.connector.instance',
+        'kits.woo.instance',
         string='WooCommerce Store',
         required=True,
         index=True,

@@ -89,7 +89,7 @@ export class WooDashboard extends Component {
         this.state.error = false;
         try {
             const payload = await this.orm.call(
-                "kits.connector.instance",
+                "kits.woo.instance",
                 "get_woo_dashboard_data",
                 [
                     this.state.dateRange,

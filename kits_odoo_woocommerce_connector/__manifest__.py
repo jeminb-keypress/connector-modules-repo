@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 {
     'name': 'Kits Odoo WooCommerce Connector',
-    'version': '20.0.1.15.2',
+    'version': '20.0.1.19.0',
     'category': 'Sales/Sales',
     'summary': 'WooCommerce store sync for products, customers, orders, coupons, and inventory',
     'description': """
@@ -38,6 +38,7 @@ Features:
         'data/ir_cron_data.xml',
         'security/ir.access.csv',
         'views/kits_connector_instance_views.xml',
+        'views/kits_woo_webhook_views.xml',
         'views/kits_woo_binding_views.xml',
         'views/kits_woo_customer_waiting_views.xml',
         'views/kits_woo_coupon_views.xml',
@@ -49,6 +50,7 @@ Features:
         'views/kits_woo_sync_wizard_views.xml',
         'views/kits_woo_wp_media_credentials_views.xml',
         'views/kits_woo_dashboard_views.xml',
+        'views/res_config_settings_views.xml',
         'views/kits_woocommerce_menus.xml',
         'data/ir_cron_customer_waiting.xml',
     ],

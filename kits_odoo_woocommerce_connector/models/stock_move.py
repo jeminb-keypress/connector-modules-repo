@@ -25,7 +25,7 @@ class StockMove(models.Model):
         if not products:
             return
         companies = products.mapped('company_id') | moves.mapped('company_id')
-        Instance = self.env['kits.connector.instance']
+        Instance = self.env['kits.woo.instance']
         domain = [
             ('platform_type', '=', 'woocommerce'),
             ('active', '=', True),

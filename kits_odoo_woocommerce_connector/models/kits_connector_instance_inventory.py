@@ -10,7 +10,7 @@ _logger = logging.getLogger(__name__)
 
 
 class KitsConnectorInstanceInventory(models.Model):
-    _inherit = 'kits.connector.instance'
+    _inherit = 'kits.woo.instance'
 
     def _woo_export_inventory(self, job=None):
         """Push Odoo free quantities (warehouse-scoped) to WooCommerce stock fields.
@@ -192,7 +192,7 @@ class KitsConnectorInstanceInventory(models.Model):
 
         Job = self.env['kits.connector.sync.job']
         pending = Job.search([
-            ('instance_id', '=', self.id),
+            ('instance_id', '=', self._kits_instance_ref()),
             ('job_type', '=', 'woo_export_inventory'),
             ('state', 'in', ('pending', 'draft')),
         ])

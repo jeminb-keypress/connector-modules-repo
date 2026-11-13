@@ -1,0 +1,84 @@
+<?xml version="1.0" encoding="utf-8"?>
+<odoo>
+    <record id="kits_woo_webhook_view_list" model="ir.ui.view">
+        <field name="name">kits.woo.webhook.list</field>
+        <field name="model">kits.woo.webhook</field>
+        <field name="arch" type="xml">
+            <list>
+                <field name="name"/>
+                <field name="topic"/>
+                <field name="webhook_id"/>
+                <field name="status" widget="badge"
+                        decoration-success="status == 'active'"
+                        decoration-warning="status == 'paused'"
+                        decoration-danger="status == 'disabled'"/>
+                <field name="delivery_url"/>
+                <field name="last_delivery_date" optional="hide"/>
+                <field name="last_error" optional="hide"/>
+                <field name="instance_id" column_invisible="True"/>
+                <field name="company_id" column_invisible="True"/>
+                <button name="action_toggle_status"
+                        type="object"
+                        string="Toggle Status"
+                        icon="refresh"
+                        groups="kits_odoo_base_connector.group_kits_connector_manager"/>
+            </list>
+        </field>
+    </record>
+
+    <record id="kits_woo_webhook_view_form" model="ir.ui.view">
+        <field name="name">kits.woo.webhook.form</field>
+        <field name="model">kits.woo.webhook</field>
+        <field name="arch" type="xml">
+            <form>
+                <header>
+                    <button name="action_activate"
+                            type="object"
+                            string="Activate"
+                            class="btn-primary"
+                            invisible="status == 'active' or not webhook_id"
+                            groups="kits_odoo_base_connector.group_kits_connector_manager"/>
+                    <button name="action_stop"
+                            type="object"
+                            string="Stop"
+                            invisible="status != 'active' or not webhook_id"
+                            groups="kits_odoo_base_connector.group_kits_connector_manager"/>
+                    <button name="action_delete_webhook"
+                            type="object"
+                            string="Delete"
+                            confirm="Delete this webhook remotely and locally?"
+                            groups="kits_odoo_base_connector.group_kits_connector_manager"/>
+                    <field name="status" widget="statusbar" statusbar_visible="active,paused,disabled"/>
+                </header>
+                <sheet>
+                    <group>
+                        <group>
+                            <field name="name" readonly="webhook_id"/>
+                            <field name="instance_id"/>
+                            <field name="topic" readonly="webhook_id"/>
+                            <field name="webhook_id" readonly="1"/>
+                        </group>
+                        <group>
+                            <field name="delivery_url" readonly="1"/>
+                            <field name="secret" password="True"
+                                      groups="kits_odoo_base_connector.group_kits_connector_manager"/>
+                            <field name="last_delivery_id" readonly="1"/>
+                            <field name="last_delivery_date" readonly="1"/>
+                            <field name="company_id" groups="base.group_multi_company"/>
+                            <field name="active"/>
+                        </group>
+                    </group>
+                    <group string="Last Error" invisible="not last_error">
+                        <field name="last_error" nolabel="1" colspan="2" readonly="1"/>
+                    </group>
+                </sheet>
+            </form>
+        </field>
+    </record>
+
+    <record id="kits_woo_webhook_action" model="ir.actions.act_window">
+        <field name="name">Webhooks</field>
+        <field name="res_model">kits.woo.webhook</field>
+        <field name="view_mode">list,form</field>
+    </record>
+</odoo>

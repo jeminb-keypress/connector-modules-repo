@@ -16,7 +16,7 @@ class WooConnectorCommon(TransactionCase):
         cls.warehouse = cls.env['stock.warehouse'].search(
             [('company_id', '=', cls.company.id)], limit=1,
         )
-        cls.instance = cls.env['kits.connector.instance'].create({
+        cls.instance = cls.env['kits.woo.instance'].create({
             'name': 'Test Woo Store',
             'platform_type': 'woocommerce',
             'company_id': cls.company.id,

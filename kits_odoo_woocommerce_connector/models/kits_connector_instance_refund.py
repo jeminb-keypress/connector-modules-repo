@@ -12,7 +12,7 @@ _logger = logging.getLogger(__name__)
 
 
 class KitsConnectorInstanceRefund(models.Model):
-    _inherit = 'kits.connector.instance'
+    _inherit = 'kits.woo.instance'
 
     woo_auto_post_credit_notes = fields.Boolean(
         string='Auto-Post Refund Credit Notes',

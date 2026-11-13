@@ -10,7 +10,7 @@ Reusable Odoo 20 integration foundation for marketplace/ERP connectors. Inspired
 
 This module provides **shared infrastructure only**. It does **not** implement WooCommerce/Shopify/Magento/Amazon/QuickBooks business sync or platform APIs.
 
-**Current version:** `20.0.1.9.1`. No app menu. Platform modules own their menus and their operation wizards. WooCommerce `20.0.1.14.1` keeps its 20-operation wizard, shipment export, tag export, product mapping, publish/unpublish, remote cancel, and credit-note refund in that module.
+**Current version:** `20.0.1.10.1` — **Common Connector Library**. No concrete store/instance model and no connection UI. Platform modules own `kits.woo.instance` / `kits.shopify.instance` (and future platforms), menus, credentials, and connection tests. Shared jobs/logs/bindings link to platform instances via `fields.Reference` (`model,id`).
 
 ### Planned dependent modules
 
@@ -27,23 +27,27 @@ This module provides **shared infrastructure only**. It does **not** implement W
 ## 2. Architecture overview
 
 ```
-Platform module
-    │ inherits / extends
+Platform module (owns concrete instance)
+    │ _inherit kits.connector.instance.mixin (+ helper mixins)
     ▼
-kits.connector.instance  ──uses──►  kits.connector.api.mixin  ──uses──►  ConnectorHttpClient
-    │                                      (auth / validate hooks)
-    ├── kits.connector.sync.job   (queue + cron + retries)
-    ├── kits.connector.log        (operation audit trail)
-    └── kits.connector.binding    (external ↔ Odoo ID map for records that have no platform binding)
+kits.woo.instance / kits.shopify.instance / …
+    │ Reference "model,id"
+    ├── kits.connector.sync.job
+    ├── kits.connector.log
+    └── kits.connector.binding
+         │
+         ▼
+kits.connector.api.mixin  ──uses──►  ConnectorHttpClient
 ```
 
 ### Design principles
 
-1. **Platform-agnostic base** — only a `generic` platform type ships here.
-2. **Extension by inheritance** — platforms use `selection_add`, override hooks, and add `_run_<job_type>` handlers.
-3. **No fake features** — generic connection test only validates configuration; it does not call remote APIs.
-4. **Company isolation** — all main models have `company_id` + multi-company access rules.
-5. **Secure credentials** — `api_key` / `api_secret` restricted to connector managers; views use `widget="password"`.
+1. **Platform-agnostic Common Connector Library** — no concrete store model or connection menus in Base.
+2. **Abstract instance mixin** — platforms define their own instance models and credentials.
+3. **Generic instance references** — jobs/logs/bindings use `fields.Reference` so multiple platforms share infrastructure without Base importing them.
+4. **Reusable helpers** — waiting-list, partner/address, order automation, product/image, stock, dashboard, scheduler utilities.
+5. **Company isolation** — shared models use `company_id` + Odoo 20 `ir.access` domains.
+6. **Secure credentials** — optional generic slots are manager-only; platforms prefer their own credential fields.
 
 ---
 
@@ -54,17 +58,23 @@ kits.connector.instance  ──uses──►  kits.connector.api.mixin  ──us
 | `__manifest__.py` | Module metadata, depends (`base`, `mail`), data load order |
 | `__init__.py` | Loads `models` and `services` |
 | `models/kits_connector_api_mixin.py` | Abstract HTTP helpers + auth/validation hooks |
-| `models/kits_connector_instance.py` | Connection instance, test connection, log/job helpers |
-| `models/kits_connector_sync_job.py` | Sync job workflow, retries, cron processor |
-| `models/kits_connector_log.py` | Operation logs |
-| `models/kits_connector_binding.py` | External ID mappings + bind helpers |
+| `models/kits_connector_instance_mixin.py` | Abstract instance mixin, Reference helpers, connection/job/log actions |
+| `models/kits_connector_partner_utils.py` | Email/address/country-state helpers |
+| `models/kits_connector_waiting_mixin.py` | Waiting-list states, claim, batch, retry |
+| `models/kits_connector_order_utils.py` | Auto confirm/invoice/payment settings mixin |
+| `models/kits_connector_product_utils.py` | Image hash, attribute, pricelist helpers |
+| `models/kits_connector_stock_utils.py` | Warehouse qty + delivery carrier helpers |
+| `models/kits_connector_dashboard_utils.py` | Period/card helpers for platform dashboards |
+| `models/kits_connector_sync_job.py` | Sync jobs (`instance_id` Reference), retries, cron |
+| `models/kits_connector_log.py` | Operation logs (`instance_id` Reference) |
+| `models/kits_connector_binding.py` | Generic external ID map (`instance_id` Reference) |
+| `migrations/20.0.1.10.0/pre-migrate.py` | Preserve legacy instance table; convert FKs → Reference strings |
 | `services/http_client.py` | Reusable `requests`-based HTTP client |
 | `services/exceptions.py` | `ConnectorError` hierarchy |
-| `security/kits_connector_security.xml` | Privilege + User/Administrator groups (Odoo 20 style) |
-| `security/ir.access.csv` | ACLs + multi-company domains (Odoo 20 unified access) |
+| `security/kits_connector_security.xml` | Privilege + User/Administrator groups |
+| `security/ir.access.csv` | Odoo 20 `ir.access` for job/log/binding |
 | `data/ir_cron_data.xml` | Cron: process pending jobs every 5 minutes |
-| `views/*` | Shared list/form/search views and window actions. No app menu. |
-| `static/description/icon.png` | App icon |
+| `views/*` | Shared job/log/binding views only (no instance UI) |
 | `ai.md` | This handover document |
 
 ---
@@ -213,6 +223,34 @@ The 2026-10-27 install did not run. Later upgrades of this module did.
 ---
 
 ## 10. Change log
+
+### 2026-11-12 — Hide Sync Job payload from UI (`20.0.1.10.1`)
+
+Removed the **Payload** notebook page from `kits.connector.sync.job` form. The `payload` field remains in the model for job processing; it is not shown to any user.
+
+**Files:** `views/kits_connector_sync_job_views.xml`, `__manifest__.py`, `ai.md`.
+
+### 2026-11-12 — Common Connector Library restructure (`20.0.1.10.0`)
+
+**Removed**
+
+- Concrete `kits.connector.instance` model, connection views/menus, and instance ACLs.
+
+**Created**
+
+- `kits.connector.instance.mixin` + partner/waiting/order/product/stock/dashboard helpers.
+- `migrations/20.0.1.10.0/pre-migrate.py` (legacy table rename + Reference conversion).
+
+**Modified**
+
+- Jobs, logs, and generic bindings now use `fields.Reference` for `instance_id`.
+- Manifest description and data files (no instance UI).
+
+**Validation**
+
+- Fresh Base-only install on `odoo20-connectors-base-only`: **Passed** (no `kits.connector.instance` in `ir_model`).
+- Woo suite after upgrade: **0 failed / 0 errors of 128**.
+- Shopify suite: **0 failed / 0 errors of 11**.
 
 ### 2026-10-27 — Initial implementation
 

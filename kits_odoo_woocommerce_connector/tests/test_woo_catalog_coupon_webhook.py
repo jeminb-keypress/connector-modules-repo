@@ -71,7 +71,7 @@ class TestWooCatalogAndCoupon(WooConnectorCommon):
             self.instance._woo_import_attributes()
         self.assertEqual(
             self.env['kits.connector.binding'].search_count([
-                ('instance_id', '=', self.instance.id),
+                ('instance_id', '=', self.instance._kits_instance_ref()),
                 ('odoo_model', '=', 'product.attribute'),
                 ('external_id', '=', '11'),
             ]),
@@ -257,7 +257,7 @@ class TestWooCatalogAndCoupon(WooConnectorCommon):
         self.assertEqual(payload, {})
 
     def test_multi_instance_coupon_isolation(self):
-        other = self.env['kits.connector.instance'].create({
+        other = self.env['kits.woo.instance'].create({
             'name': 'Other Woo',
             'platform_type': 'woocommerce',
             'company_id': self.company.id,
@@ -291,7 +291,7 @@ class TestWooResourceWebhookHttp(HttpCase):
         warehouse = self.env['stock.warehouse'].search(
             [('company_id', '=', self.env.company.id)], limit=1,
         )
-        self.instance = self.env['kits.connector.instance'].create({
+        self.instance = self.env['kits.woo.instance'].create({
             'name': 'HTTP Resource Webhook Store',
             'platform_type': 'woocommerce',
             'company_id': self.env.company.id,
@@ -302,6 +302,17 @@ class TestWooResourceWebhookHttp(HttpCase):
             'state': 'connected',
             'woo_webhook_public_base_url': 'http://127.0.0.1',
             'woo_webhook_secret': 'http-secret',
+        })
+        self.env['kits.woo.webhook'].create({
+            'name': 'Product Created',
+            'instance_id': self.instance.id,
+            'topic': 'product.created',
+            'webhook_id': '801',
+            'delivery_url': (
+                f'{self.instance.woo_webhook_resource_base_url}/products'
+            ),
+            'secret': 'http-secret',
+            'status': 'active',
         })
 
     def _sign(self, body: bytes) -> str:
@@ -319,12 +330,14 @@ class TestWooResourceWebhookHttp(HttpCase):
                 'Content-Type': 'application/json',
                 'X-WC-Webhook-Signature': self._sign(body),
                 'X-WC-Webhook-Topic': 'product.created',
+                'X-WC-Webhook-ID': '801',
+                'X-WC-Webhook-Source': 'https://woo.http.test',
                 'X-WC-Webhook-Delivery-ID': 'prod-http-1',
             },
         )
         self.assertEqual(response.status_code, 200)
         job = self.env['kits.connector.sync.job'].search([
-            ('instance_id', '=', self.instance.id),
+            ('instance_id', '=', self.instance._kits_instance_ref()),
             ('job_type', '=', 'woo_webhook_product'),
         ], limit=1)
         self.assertTrue(job)

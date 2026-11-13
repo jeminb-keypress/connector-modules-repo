@@ -18,7 +18,7 @@ class KitsWooCustomerBinding(models.Model):
     _rec_name = 'external_id'
 
     instance_id = fields.Many2one(
-        'kits.connector.instance',
+        'kits.woo.instance',
         string='WooCommerce Store',
         required=True,
         index=True,
@@ -84,7 +84,7 @@ class KitsWooCustomerBinding(models.Model):
     def create(self, vals_list):
         for vals in vals_list:
             if vals.get('instance_id') and not vals.get('company_id'):
-                instance = self.env['kits.connector.instance'].browse(vals['instance_id'])
+                instance = self.env['kits.woo.instance'].browse(vals['instance_id'])
                 vals['company_id'] = instance.company_id.id
             if vals.get('external_id'):
                 vals['external_id'] = str(vals['external_id'])

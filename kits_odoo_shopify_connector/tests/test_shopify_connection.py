@@ -32,14 +32,14 @@ class TestShopifyConnection(ShopifyConnectorCommon):
         self.assert_token_not_stored_in_logs(self.token, self.instance)
 
     def test_missing_domain_or_token_does_not_call_shopify(self):
-        missing_domain = self.env['kits.connector.instance'].create({
+        missing_domain = self.env['kits.shopify.instance'].create({
             'name': 'Shopify Missing Domain',
             'platform_type': 'shopify',
             'company_id': self.company.id,
             'shopify_api_version': '2026-10',
             'shopify_access_token': self.token,
         })
-        missing_token = self.env['kits.connector.instance'].create({
+        missing_token = self.env['kits.shopify.instance'].create({
             'name': 'Shopify Missing Token',
             'platform_type': 'shopify',
             'company_id': self.company.id,
@@ -143,7 +143,7 @@ class TestShopifyConnection(ShopifyConnectorCommon):
 
     def test_custom_domain_is_rejected_and_url_is_normalized(self):
         with self.assertRaises(ValidationError):
-            self.env['kits.connector.instance'].create({
+            self.env['kits.shopify.instance'].create({
                 'name': 'Shopify Custom Domain',
                 'platform_type': 'shopify',
                 'company_id': self.company.id,

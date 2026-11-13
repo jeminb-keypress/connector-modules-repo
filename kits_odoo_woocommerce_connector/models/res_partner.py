@@ -104,7 +104,14 @@ class ResPartner(models.Model):
             ])
             if not extra:
                 continue
-            partner.kits_connected_instance_ids |= extra.instance_id
+            names = [
+                name for name in (partner.kits_connected_instance_names or '').split(', ')
+                if name
+            ]
+            for instance in extra.mapped('instance_id'):
+                if instance.display_name not in names:
+                    names.append(instance.display_name)
+            partner.kits_connected_instance_names = ', '.join(names) if names else False
             partner.kits_binding_count += len(extra)
 
     def action_kits_open_bindings(self):
@@ -126,7 +133,7 @@ class ResPartner(models.Model):
         return super().unlink()
 
     def _woo_get_instances_for_company(self):
-        return self.env['kits.connector.instance'].search([
+        return self.env['kits.woo.instance'].search([
             ('platform_type', '=', 'woocommerce'),
             ('active', '=', True),
             ('company_id', '=', self.env.company.id),
@@ -156,7 +163,7 @@ class ResPartner(models.Model):
         """Open Fetch Customer wizard (import by WooCommerce customer ID)."""
         self._check_woo_sync_access()
         self.ensure_one()
-        default_instance = self._woo_resolve_instance() or self.env['kits.connector.instance']
+        default_instance = self._woo_resolve_instance() or self.env['kits.woo.instance']
         default_woo_id = False
         if default_instance:
             binding = self.env['kits.woo.customer.binding']._find(

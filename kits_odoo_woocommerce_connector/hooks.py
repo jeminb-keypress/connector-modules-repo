@@ -11,7 +11,7 @@ def post_init_hook(env):
     """
     Binding = env['kits.connector.binding'].sudo()
     Product = env['product.template'].sudo()
-    Instance = env['kits.connector.instance'].sudo()
+    Instance = env['kits.woo.instance'].sudo()
 
     bindings = Binding.search([
         ('odoo_model', '=', 'product.template'),
@@ -20,7 +20,9 @@ def post_init_hook(env):
     ])
     by_template = {}
     for binding in bindings:
-        by_template.setdefault(binding.odoo_record_id, set()).add(binding.instance_id.id)
+        inst = binding._kits_get_instance()
+        if inst:
+            by_template.setdefault(binding.odoo_record_id, set()).add(inst.id)
 
     for tmpl_id, instance_ids in by_template.items():
         template = Product.browse(tmpl_id).exists()
@@ -50,7 +52,7 @@ def post_init_hook(env):
         # existing simple flag recompute is False — skip mass assign.
         # Only attach the lone store when product has a variant binding on it.
         variant_bindings = Binding.search([
-            ('instance_id', '=', instance.id),
+            ('instance_id', '=', instance._kits_instance_ref()),
             ('odoo_model', '=', 'product.product'),
             ('active', '=', True),
         ])

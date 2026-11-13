@@ -11,7 +11,7 @@ _logger = logging.getLogger(__name__)
 
 
 class KitsConnectorInstanceOrder(models.Model):
-    _inherit = 'kits.connector.instance'
+    _inherit = 'kits.woo.instance'
 
     def _woo_import_orders(self, job=None):
         """Import WooCommerce orders into confirmed Odoo sale orders (idempotent).
@@ -345,15 +345,8 @@ class KitsConnectorInstanceOrder(models.Model):
             updates['woo_payment_method_id'] = (
                 payment_map.payment_method_id.id if payment_map else False
             )
-        if self.woo_update_customer_on_order_import:
-            partner = self._woo_partner_from_order(woo_order)
-            invoice_partner, shipping_partner = self._woo_order_address_partners(
-                woo_order, partner,
-            )
-            if partner:
-                updates['partner_id'] = partner.id
-                updates['partner_invoice_id'] = invoice_partner.id
-                updates['partner_shipping_id'] = shipping_partner.id
+        # Existing orders never refresh/create the customer — only new imports do,
+        # and only when the contact is missing (see _woo_partner_from_order).
 
         # Configurable unsupported-status logging
         known = {

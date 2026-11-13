@@ -431,7 +431,7 @@ class TestWooWizardAllOperations(WooConnectorCommon):
         self.assertEqual(child.parent_id, parent)
         self.assertEqual(
             self.env['kits.connector.binding'].search_count([
-                ('instance_id', '=', self.instance.id),
+                ('instance_id', '=', self.instance._kits_instance_ref()),
                 ('odoo_model', '=', 'product.tag'),
                 ('external_id', '=', '8'),
             ]),
@@ -493,7 +493,7 @@ class TestWooWizardAllOperations(WooConnectorCommon):
         )
         self.assertEqual(
             self.env['kits.connector.sync.job'].search_count([
-                ('instance_id', '=', self.instance.id),
+                ('instance_id', '=', self.instance._kits_instance_ref()),
                 ('job_type', '=', 'woo_map_products'),
             ]),
             0,

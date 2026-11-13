@@ -1,7 +1,5 @@
 <?xml version="1.0" encoding="utf-8"?>
 <odoo>
-    <delete model="ir.actions.server" id="action_woo_export_customers_selected"/>
-
     <record id="view_partner_form_woo_connector" model="ir.ui.view">
         <field name="name">res.partner.form.woocommerce</field>
         <field name="model">res.partner</field>
@@ -49,10 +47,7 @@
                       groups="kits_odoo_base_connector.group_kits_connector_user"
                       invisible="parent_id">
                     <group>
-                        <field name="kits_connected_instance_ids"
-                                 widget="many2many_tags"
-                                 options="{'no_create': True}"
-                                 readonly="1"/>
+                        <field name="kits_connected_instance_names" readonly="1"/>
                     </group>
                     <group string="WooCommerce" name="woo_customer_sync">
                         <field name="woo_is_store_customer"/>

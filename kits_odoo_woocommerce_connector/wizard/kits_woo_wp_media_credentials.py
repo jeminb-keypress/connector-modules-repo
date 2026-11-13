@@ -10,7 +10,7 @@ class KitsWooWpMediaCredentials(models.TransientModel):
     _description = 'Set WordPress Media Credentials'
 
     instance_id = fields.Many2one(
-        'kits.connector.instance',
+        'kits.woo.instance',
         string='WooCommerce Store',
         required=True,
         readonly=True,
@@ -35,7 +35,7 @@ class KitsWooWpMediaCredentials(models.TransientModel):
     @api.model
     def default_get(self, fields_list):
         values = super().default_get(fields_list)
-        instance = self.env['kits.connector.instance'].browse(
+        instance = self.env['kits.woo.instance'].browse(
             values.get('instance_id') or self.env.context.get('default_instance_id')
         )
         if instance and instance.exists() and instance._is_woocommerce():

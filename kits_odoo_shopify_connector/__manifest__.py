@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 {
     'name': 'Kits Odoo Shopify Connector',
-    'version': '20.0.1.1.0',
+    'version': '20.0.1.2.0',
     'category': 'Productivity',
     'summary': 'Connect Shopify stores and test the Admin GraphQL API',
     'description': """
@@ -19,6 +19,7 @@ version, and tests connectivity with the Shopify GraphQL Admin API.
         'kits_odoo_base_connector',
     ],
     'data': [
+        'security/ir.access.csv',
         'views/kits_connector_instance_views.xml',
         'views/kits_shopify_menus.xml',
     ],

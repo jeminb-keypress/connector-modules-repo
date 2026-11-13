@@ -10,7 +10,7 @@ from .common import WooConnectorCommon
 class TestWooDashboard(WooConnectorCommon):
 
     def test_dashboard_payload_structure(self):
-        data = self.env['kits.connector.instance'].get_woo_dashboard_data('last_30')
+        data = self.env['kits.woo.instance'].get_woo_dashboard_data('last_30')
         self.assertIn('kpis', data)
         self.assertIn('connected_stores', data['kpis'])
         self.assertIn('customers', data['kpis'])
@@ -80,7 +80,7 @@ class TestWooDashboard(WooConnectorCommon):
             'state': 'pending',
         })
 
-        data = self.env['kits.connector.instance'].get_woo_dashboard_data('last_30')
+        data = self.env['kits.woo.instance'].get_woo_dashboard_data('last_30')
         self.assertGreaterEqual(data['kpis']['connected_stores']['value'], 1)
         self.assertGreaterEqual(data['kpis']['customers']['value'], 1)
         self.assertGreaterEqual(data['kpis']['products']['value'], 1)
@@ -92,7 +92,7 @@ class TestWooDashboard(WooConnectorCommon):
         self.assertTrue(any(j['state'] == 'pending' for j in data['pending_jobs']))
 
     def test_products_not_double_counted_across_stores(self):
-        store_b = self.env['kits.connector.instance'].create({
+        store_b = self.env['kits.woo.instance'].create({
             'name': 'Dash Woo Store B',
             'platform_type': 'woocommerce',
             'company_id': self.company.id,
@@ -114,7 +114,7 @@ class TestWooDashboard(WooConnectorCommon):
                 'external_id': ext,
                 'product_type': 'simple',
             })
-        data = self.env['kits.connector.instance'].get_woo_dashboard_data('last_30')
+        data = self.env['kits.woo.instance'].get_woo_dashboard_data('last_30')
         # At least the shared template counted once, not twice
         bindings = self.env['kits.woo.product.binding'].search_count([
             ('product_tmpl_id', '=', template.id),
@@ -124,12 +124,12 @@ class TestWooDashboard(WooConnectorCommon):
         self.assertGreaterEqual(data['kpis']['products']['value'], 1)
 
     def test_quick_action_manage_stores(self):
-        action = self.env['kits.connector.instance'].action_woo_dashboard_quick_action(
+        action = self.env['kits.woo.instance'].action_woo_dashboard_quick_action(
             'manage_stores',
         )
         self.assertEqual(action['type'], 'ir.actions.act_window')
-        self.assertEqual(action['res_model'], 'kits.connector.instance')
+        self.assertEqual(action['res_model'], 'kits.woo.instance')
 
     def test_custom_range_requires_dates(self):
         with self.assertRaises(UserError):
-            self.env['kits.connector.instance'].get_woo_dashboard_data('custom')
+            self.env['kits.woo.instance'].get_woo_dashboard_data('custom')

@@ -33,7 +33,7 @@ class KitsWooCustomerWaiting(models.Model):
     _rec_name = 'external_id'
 
     instance_id = fields.Many2one(
-        'kits.connector.instance',
+        'kits.woo.instance',
         string='WooCommerce Store',
         required=True,
         index=True,
@@ -115,7 +115,7 @@ class KitsWooCustomerWaiting(models.Model):
     def create(self, vals_list):
         for vals in vals_list:
             if vals.get('instance_id') and not vals.get('company_id'):
-                instance = self.env['kits.connector.instance'].browse(vals['instance_id'])
+                instance = self.env['kits.woo.instance'].browse(vals['instance_id'])
                 vals['company_id'] = instance.company_id.id
             if vals.get('external_id') is not None:
                 vals['external_id'] = str(vals['external_id'])
@@ -301,7 +301,7 @@ class KitsWooCustomerWaiting(models.Model):
         """Reuse sync-job infrastructure to process waiting-list batches."""
         Job = self.env['kits.connector.sync.job'].sudo()
         existing = Job.search([
-            ('instance_id', '=', instance.id),
+            ('instance_id', '=', instance._kits_instance_ref()),
             ('job_type', '=', 'woo_process_customer_waiting'),
             ('state', 'in', ('pending', 'running')),
         ], limit=1)
@@ -322,25 +322,14 @@ class KitsWooCustomerWaiting(models.Model):
     def _cron_process_customer_waiting(self):
         """Five-minute cron: enqueue a process job per store with work to do."""
         Waiting = self.sudo()
-        instance_ids = set()
-        for group in Waiting.read_group(
-            [('state', '=', 'pending')],
-            ['instance_id'],
-            ['instance_id'],
-        ):
-            if group.get('instance_id'):
-                instance_ids.add(group['instance_id'][0])
-        for group in Waiting.read_group(
-            self._retryable_failed_domain(),
-            ['instance_id'],
-            ['instance_id'],
-        ):
-            if group.get('instance_id'):
-                instance_ids.add(group['instance_id'][0])
-        for instance_id in instance_ids:
-            instance = self.env['kits.connector.instance'].browse(instance_id)
-            if instance.exists() and instance.active:
-                self._enqueue_process_job(instance, reason='cron')
+        # Odoo 20 read_group requires aggregates; map instances from eligible rows.
+        pending = Waiting.search([('state', '=', 'pending')])
+        retryable = Waiting.search(self._retryable_failed_domain())
+        instances = (pending | retryable).mapped('instance_id').filtered(
+            lambda inst: inst.active,
+        )
+        for instance in instances:
+            self._enqueue_process_job(instance, reason='cron')
         return True
 
     # -------------------------------------------------------------------------
@@ -381,7 +370,7 @@ class KitsWooCustomerWaiting(models.Model):
         self.ensure_one()
         return {
             'type': 'ir.actions.act_window',
-            'res_model': 'kits.connector.instance',
+            'res_model': 'kits.woo.instance',
             'res_id': self.instance_id.id,
             'view_mode': 'form',
             'target': 'current',

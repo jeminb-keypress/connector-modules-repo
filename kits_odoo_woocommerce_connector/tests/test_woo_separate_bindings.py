@@ -11,7 +11,7 @@ from .common import WooConnectorCommon
 class TestWooSeparateBindings(WooConnectorCommon):
 
     def _other_store(self):
-        return self.env['kits.connector.instance'].create({
+        return self.env['kits.woo.instance'].create({
             'name': 'Woo Store B',
             'platform_type': 'woocommerce',
             'company_id': self.company.id,

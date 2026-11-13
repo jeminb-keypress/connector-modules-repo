@@ -21,6 +21,7 @@ from . import kits_connector_instance_order
 from . import kits_connector_instance_refund
 from . import kits_connector_instance_inventory
 from . import kits_connector_instance_mapping
+from . import kits_woo_webhook
 from . import kits_connector_instance_webhook
 from . import account_move
 from . import kits_connector_sync_job

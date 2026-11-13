@@ -14,11 +14,11 @@ class KitsConnectorLog(models.Model):
         index=True,
         help='Technical operation name, e.g. test_connection or import_orders.',
     )
-    instance_id = fields.Many2one(
-        'kits.connector.instance',
+    instance_id = fields.Reference(
+        selection='_kits_selection_instance_models',
+        string='Store / Instance',
         required=True,
         index=True,
-        ondelete='cascade',
     )
     company_id = fields.Many2one(
         'res.company',
@@ -31,11 +31,7 @@ class KitsConnectorLog(models.Model):
         index=True,
         ondelete='set null',
     )
-    platform_type = fields.Selection(
-        related='instance_id.platform_type',
-        store=True,
-        readonly=True,
-    )
+    platform_type = fields.Char(string='Platform', index=True)
     level = fields.Selection(
         selection=[
             ('debug', 'Debug'),
@@ -68,15 +64,31 @@ class KitsConnectorLog(models.Model):
         help='Optional truncated response payload for diagnostics. Never store secrets.',
     )
 
+    @api.model
+    def _kits_selection_instance_models(self):
+        return self.env['kits.connector.sync.job']._kits_selection_instance_models()
+
+    def _kits_get_instance(self):
+        self.ensure_one()
+        return self.env['kits.connector.instance.mixin']._kits_browse_instance_ref(
+            self.instance_id,
+        )
+
     @api.onchange('instance_id')
     def _onchange_instance_id(self):
-        if self.instance_id:
-            self.company_id = self.instance_id.company_id
+        instance = self._kits_get_instance() if self.instance_id else False
+        if instance:
+            self.company_id = instance.company_id
+            self.platform_type = getattr(instance, 'platform_type', False)
 
     @api.model_create_multi
     def create(self, vals_list):
+        Mixin = self.env['kits.connector.instance.mixin']
         for vals in vals_list:
-            if vals.get('instance_id') and not vals.get('company_id'):
-                instance = self.env['kits.connector.instance'].browse(vals['instance_id'])
-                vals['company_id'] = instance.company_id.id
+            ref = vals.get('instance_id')
+            instance = Mixin._kits_browse_instance_ref(ref) if ref else Mixin.browse()
+            if instance:
+                vals['instance_id'] = instance._kits_instance_ref()
+                vals.setdefault('company_id', instance.company_id.id)
+                vals.setdefault('platform_type', instance.platform_type)
         return super().create(vals_list)

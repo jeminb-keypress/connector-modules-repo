@@ -20,7 +20,7 @@ class TestWooRecordSyncAndStatus(WooConnectorCommon):
         self.fail('Expected UserError')
 
     def test_instance_specific_sku_bindings(self):
-        other = self.env['kits.connector.instance'].create({
+        other = self.env['kits.woo.instance'].create({
             'name': 'Second Woo Store',
             'platform_type': 'woocommerce',
             'company_id': self.company.id,

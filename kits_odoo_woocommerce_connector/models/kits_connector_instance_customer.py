@@ -27,7 +27,7 @@ CUSTOMER_WAITING_PROCESS_BATCH = 50
 
 
 class KitsConnectorInstanceCustomer(models.Model):
-    _inherit = 'kits.connector.instance'
+    _inherit = 'kits.woo.instance'
 
     def _woo_customer_role_allowed(self, customer, *, allow_missing=False):
         """Only WooCommerce users with role ``customer`` become store customers."""
@@ -554,7 +554,8 @@ class KitsConnectorInstanceCustomer(models.Model):
     def _woo_partner_from_order(self, woo_order):
         """Resolve partner for an order. Guests never get customer bindings.
 
-        Registered customers use the same matcher as customer import. Ambiguous
+        Registered customers: reuse an existing active binding without re-importing
+        or updating the contact. Import only when no binding exists yet. Ambiguous
         email matches raise so the order is not confirmed with a wrong contact.
         """
         self.ensure_one()
@@ -567,6 +568,11 @@ class KitsConnectorInstanceCustomer(models.Model):
         billing = woo_order.get('billing') or {}
 
         if customer_id > 0:
+            existing = self.env['kits.woo.customer.binding']._find(
+                self, external_id=str(customer_id),
+            )
+            if existing and existing.active and existing.partner_id:
+                return existing.partner_id
             try:
                 woo_customer = self._woo_api().get_customer(customer_id)
                 if woo_customer.get('id'):

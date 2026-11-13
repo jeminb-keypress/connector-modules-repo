@@ -141,7 +141,7 @@ class TestWooOrderSync(WooConnectorCommon):
         self.assertTrue(self.env['sale.order'].search([('woo_order_id', '=', '810')]))
 
     def test_multi_store_bindings_isolated(self):
-        other = self.env['kits.connector.instance'].create({
+        other = self.env['kits.woo.instance'].create({
             'name': 'Other Woo Store',
             'platform_type': 'woocommerce',
             'company_id': self.company.id,

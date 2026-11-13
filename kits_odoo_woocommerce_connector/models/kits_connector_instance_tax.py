@@ -12,7 +12,7 @@ _logger = logging.getLogger(__name__)
 
 
 class KitsConnectorInstanceTax(models.Model):
-    _inherit = 'kits.connector.instance'
+    _inherit = 'kits.woo.instance'
 
     woo_tax_map_ids = fields.One2many(
         'kits.woo.tax.map',

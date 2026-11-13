@@ -1,29 +1,34 @@
 # -*- coding: utf-8 -*-
-"""WooCommerce customer webhook registration and processing."""
+"""WooCommerce webhook switches, orchestration, and event processing."""
 
 import base64
 import hashlib
 import hmac
+import ipaddress
 import logging
-import secrets
+import re
+from urllib.parse import urlparse
 
 from odoo import api, fields, models
-from odoo.exceptions import UserError
+from odoo.exceptions import UserError, ValidationError
 
 _logger = logging.getLogger(__name__)
 
-_CUSTOMER_WEBHOOK_TOPICS = (
-    'customer.created',
-    'customer.updated',
-    'customer.deleted',
+_PRIVATE_HOST_RE = re.compile(
+    r'^(localhost|.*\.local|.*\.internal|.*\.lan)$',
+    re.IGNORECASE,
 )
 
-# Non-customer resources (customer webhooks remain separately registerable).
 _RESOURCE_WEBHOOK_TOPICS = {
     'products': (
         'product.created',
         'product.updated',
         'product.deleted',
+    ),
+    'customers': (
+        'customer.created',
+        'customer.updated',
+        'customer.deleted',
     ),
     'orders': (
         'order.created',
@@ -37,6 +42,27 @@ _RESOURCE_WEBHOOK_TOPICS = {
     ),
 }
 
+_RESOURCE_SWITCH_FIELDS = {
+    'products': 'woo_webhook_product_enabled',
+    'customers': 'woo_webhook_customer_enabled',
+    'orders': 'woo_webhook_order_enabled',
+    'coupons': 'woo_webhook_coupon_enabled',
+}
+
+_RESOURCE_TMP_FIELDS = {
+    'products': 'woo_webhook_product_enabled_tmp',
+    'customers': 'woo_webhook_customer_enabled_tmp',
+    'orders': 'woo_webhook_order_enabled_tmp',
+    'coupons': 'woo_webhook_coupon_enabled_tmp',
+}
+
+_TMP_TO_STORED = {
+    'woo_webhook_product_enabled_tmp': 'woo_webhook_product_enabled',
+    'woo_webhook_customer_enabled_tmp': 'woo_webhook_customer_enabled',
+    'woo_webhook_order_enabled_tmp': 'woo_webhook_order_enabled',
+    'woo_webhook_coupon_enabled_tmp': 'woo_webhook_coupon_enabled',
+}
+
 _RESOURCE_JOB_TYPES = {
     'products': 'woo_webhook_product',
     'orders': 'woo_webhook_order',
@@ -44,37 +70,106 @@ _RESOURCE_JOB_TYPES = {
     'customers': 'woo_webhook_customer',
 }
 
-_RESOURCE_BINDING_MODELS = {
-    'products': 'product.template',
-    'orders': 'sale.order',
-    'coupons': 'kits.woo.coupon',
-    'customers': 'res.partner',
-}
-
 
 class KitsConnectorInstanceWebhook(models.Model):
-    _inherit = 'kits.connector.instance'
+    _inherit = 'kits.woo.instance'
 
-    woo_webhook_enabled = fields.Boolean(
+    # --- Desired configuration (stored switches) ---
+    woo_webhook_product_enabled = fields.Boolean(
+        string='Product Webhooks Enabled',
+        default=False,
+        copy=False,
+    )
+    woo_webhook_customer_enabled = fields.Boolean(
         string='Customer Webhooks Enabled',
         default=False,
         copy=False,
-        help='When enabled, this store registers WooCommerce customer.created / '
-             'updated / deleted webhooks that POST into Odoo.',
+    )
+    woo_webhook_order_enabled = fields.Boolean(
+        string='Order Webhooks Enabled',
+        default=False,
+        copy=False,
+    )
+    woo_webhook_coupon_enabled = fields.Boolean(
+        string='Coupon Webhooks Enabled',
+        default=False,
+        copy=False,
+    )
+
+    # Temporary form fields (not source of truth; mirrored from stored on compute)
+    woo_webhook_product_enabled_tmp = fields.Boolean(
+        string='Product Webhooks',
+        compute='_compute_woo_webhook_enabled_tmp',
+        inverse='_inverse_woo_webhook_enabled_tmp',
+        readonly=False,
+    )
+    woo_webhook_customer_enabled_tmp = fields.Boolean(
+        string='Customer Webhooks',
+        compute='_compute_woo_webhook_enabled_tmp',
+        inverse='_inverse_woo_webhook_enabled_tmp',
+        readonly=False,
+    )
+    woo_webhook_order_enabled_tmp = fields.Boolean(
+        string='Order Webhooks',
+        compute='_compute_woo_webhook_enabled_tmp',
+        inverse='_inverse_woo_webhook_enabled_tmp',
+        readonly=False,
+    )
+    woo_webhook_coupon_enabled_tmp = fields.Boolean(
+        string='Coupon Webhooks',
+        compute='_compute_woo_webhook_enabled_tmp',
+        inverse='_inverse_woo_webhook_enabled_tmp',
+        readonly=False,
+    )
+
+    # Legacy fields retained for migration compatibility only (not UI source of truth)
+    woo_webhook_enabled = fields.Boolean(
+        string='(Legacy) Customer Webhooks Enabled',
+        default=False,
+        copy=False,
+        help='Deprecated. Migrated to woo_webhook_customer_enabled.',
+    )
+    woo_resource_webhooks_enabled = fields.Boolean(
+        string='(Legacy) Catalog/Order/Coupon Webhooks Enabled',
+        default=False,
+        copy=False,
+        help='Deprecated. Split into product/order/coupon switches.',
     )
     woo_webhook_secret = fields.Char(
-        string='Webhook Secret',
+        string='(Legacy) Shared Webhook Secret',
         copy=False,
         groups='kits_odoo_base_connector.group_kits_connector_manager',
-        help='HMAC-SHA256 secret used to verify X-WC-Webhook-Signature. '
-             'Generated automatically when webhooks are registered.',
+        help='Deprecated shared secret. Migrated onto individual webhook records.',
     )
-    woo_webhook_public_base_url = fields.Char(
-        string='Public Odoo Base URL',
+    woo_webhook_ids = fields.Json(
+        string='(Legacy) Registered Webhook IDs',
         copy=False,
-        help='Public HTTPS origin WooCommerce can reach, e.g. https://odoo.example.com. '
-             'Required for remote WooCommerce stores. Local WordPress may use '
-             'http://127.0.0.1:2099 during development. Do not include a path.',
+        help='Deprecated topic→id map. Migrated to kits.woo.webhook records.',
+    )
+
+    public_webhook_url = fields.Char(
+        string='Public Webhook URL',
+        copy=False,
+        help='Optional externally reachable Odoo origin used for WooCommerce '
+             'webhook deliveries (scheme + host[+port], no path/query/fragment). '
+             'Leave empty to use Odoo get_base_url() / web.base.url. '
+             'Example: https://odoo.example.com or https://abc.ngrok-free.app',
+    )
+    # Backward-compatible alias (non-stored) for older call sites/tests.
+    woo_webhook_public_base_url = fields.Char(
+        related='public_webhook_url',
+        readonly=False,
+        string='Public Webhook URL',
+    )
+    effective_webhook_base_url = fields.Char(
+        string='Effective Webhook Base URL',
+        compute='_compute_woo_webhook_endpoint_url',
+        help='Base URL currently used for new webhook registrations '
+             '(Public Webhook URL when set, otherwise get_base_url()).',
+    )
+    public_webhook_url_warning = fields.Char(
+        string='Public Webhook URL Warning',
+        compute='_compute_woo_webhook_endpoint_url',
     )
     woo_webhook_endpoint_url = fields.Char(
         string='Customer Webhook Endpoint',
@@ -86,22 +181,160 @@ class KitsConnectorInstanceWebhook(models.Model):
         compute='_compute_woo_webhook_endpoint_url',
         help='Base path for resource webhooks: …/kits_woo/webhook/<instance_id>/<resource>.',
     )
-    woo_webhook_ids = fields.Json(
-        string='Registered Webhook IDs',
-        copy=False,
-        help='Map of topic → WooCommerce webhook id for this instance '
-             '(customers, products, orders, coupons).',
-    )
-    woo_resource_webhooks_enabled = fields.Boolean(
-        string='Catalog/Order/Coupon Webhooks Enabled',
-        default=False,
-        copy=False,
+    woo_webhook_ids_rel = fields.One2many(
+        'kits.woo.webhook',
+        'instance_id',
+        string='Registered Webhooks',
     )
 
-    @api.depends('woo_webhook_public_base_url')
+    @api.depends(
+        'woo_webhook_product_enabled',
+        'woo_webhook_customer_enabled',
+        'woo_webhook_order_enabled',
+        'woo_webhook_coupon_enabled',
+    )
+    def _compute_woo_webhook_enabled_tmp(self):
+        for instance in self:
+            instance.woo_webhook_product_enabled_tmp = instance.woo_webhook_product_enabled
+            instance.woo_webhook_customer_enabled_tmp = instance.woo_webhook_customer_enabled
+            instance.woo_webhook_order_enabled_tmp = instance.woo_webhook_order_enabled
+            instance.woo_webhook_coupon_enabled_tmp = instance.woo_webhook_coupon_enabled
+
+    def _inverse_woo_webhook_enabled_tmp(self):
+        """Stash intended switch values for write() to apply after API success."""
+        pending = self.env.context.get('_woo_webhook_switch_pending')
+        if pending is None:
+            # Context is immutable; use env cache attribute for this transaction.
+            pending = getattr(self.env, '_woo_webhook_switch_pending', None)
+            if pending is None:
+                pending = {}
+                self.env._woo_webhook_switch_pending = pending
+        for instance in self:
+            intent = pending.setdefault(instance.id, {})
+            intent['woo_webhook_product_enabled'] = bool(
+                instance.woo_webhook_product_enabled_tmp
+            )
+            intent['woo_webhook_customer_enabled'] = bool(
+                instance.woo_webhook_customer_enabled_tmp
+            )
+            intent['woo_webhook_order_enabled'] = bool(
+                instance.woo_webhook_order_enabled_tmp
+            )
+            intent['woo_webhook_coupon_enabled'] = bool(
+                instance.woo_webhook_coupon_enabled_tmp
+            )
+
+    @api.model
+    def _woo_normalize_public_webhook_url(self, url, *, raise_error=True):
+        """Normalize and validate an optional Public Webhook URL origin."""
+        raw = (url or '').strip()
+        if not raw:
+            return ''
+        parsed = urlparse(raw)
+        if parsed.scheme not in ('http', 'https'):
+            msg = self.env._(
+                'Public Webhook URL must start with http:// or https://.'
+            )
+            if raise_error:
+                raise ValidationError(msg)
+            return ''
+        if parsed.query or parsed.fragment:
+            msg = self.env._(
+                'Public Webhook URL must not include query strings or fragments.'
+            )
+            if raise_error:
+                raise ValidationError(msg)
+            return ''
+        if parsed.path and parsed.path not in ('', '/'):
+            msg = self.env._(
+                'Public Webhook URL must be an origin only (no path). '
+                'Example: https://odoo.example.com'
+            )
+            if raise_error:
+                raise ValidationError(msg)
+            return ''
+        if not parsed.netloc:
+            msg = self.env._('Public Webhook URL is missing a host name.')
+            if raise_error:
+                raise ValidationError(msg)
+            return ''
+        return f'{parsed.scheme}://{parsed.netloc}'.rstrip('/')
+
+    @api.model
+    def _woo_public_webhook_url_warning(self, base_url):
+        """Human-readable warning for likely-unreachable or insecure origins."""
+        if not base_url:
+            return ''
+        parsed = urlparse(base_url)
+        host = (parsed.hostname or '').lower()
+        warnings = []
+        if parsed.scheme == 'http':
+            warnings.append(self.env._(
+                'URL uses HTTP instead of HTTPS. Prefer HTTPS in production.'
+            ))
+        if host in ('localhost', '127.0.0.1', '::1') or host.endswith('.localhost'):
+            warnings.append(self.env._(
+                'URL points at localhost. A remote WooCommerce server cannot '
+                'reach this address unless you use a public tunnel.'
+            ))
+        elif _PRIVATE_HOST_RE.match(host or ''):
+            warnings.append(self.env._(
+                'URL uses an internal hostname that is unlikely to be reachable '
+                'from WooCommerce over the internet.'
+            ))
+        else:
+            try:
+                ip = ipaddress.ip_address(host)
+                if (
+                    ip.is_private
+                    or ip.is_loopback
+                    or ip.is_link_local
+                    or ip.is_reserved
+                ):
+                    warnings.append(self.env._(
+                        'URL uses a private/local IP address. WooCommerce must '
+                        'be able to reach Odoo over the internet.'
+                    ))
+            except ValueError:
+                pass
+        return ' '.join(warnings)
+
+    def _woo_get_public_base_url(self):
+        """Public origin WooCommerce must call for this store.
+
+        Uses ``public_webhook_url`` when set; otherwise ``get_base_url()``.
+        """
+        self.ensure_one()
+        override = self._woo_normalize_public_webhook_url(
+            self.public_webhook_url, raise_error=False,
+        )
+        if override:
+            return override
+        return (self.get_base_url() or '').strip().rstrip('/')
+
+    def _get_webhook_delivery_url(self, topic):
+        """Build the delivery URL for one WooCommerce topic on this store."""
+        self.ensure_one()
+        resource = self.env['kits.woo.webhook']._woo_resource_for_topic(topic)
+        if not resource:
+            raise UserError(self.env._(
+                'Unsupported webhook topic: %(topic)s',
+                topic=topic,
+            ))
+        return self._woo_delivery_url_for_resource(resource)
+
+    @api.depends('public_webhook_url')
     def _compute_woo_webhook_endpoint_url(self):
         for instance in self:
-            base = (instance.woo_webhook_public_base_url or '').rstrip('/')
+            base = instance._woo_get_public_base_url() if instance.id else (
+                instance._woo_normalize_public_webhook_url(
+                    instance.public_webhook_url, raise_error=False,
+                ) or (instance.get_base_url() or '').strip().rstrip('/')
+            )
+            instance.effective_webhook_base_url = base or False
+            instance.public_webhook_url_warning = (
+                instance._woo_public_webhook_url_warning(base) if base else False
+            )
             if base and instance.id:
                 instance.woo_webhook_resource_base_url = (
                     f'{base}/kits_woo/webhook/{instance.id}'
@@ -113,95 +346,567 @@ class KitsConnectorInstanceWebhook(models.Model):
                 instance.woo_webhook_resource_base_url = False
                 instance.woo_webhook_endpoint_url = False
 
-    def _woo_ensure_webhook_secret(self):
-        self.ensure_one()
-        if not self.woo_webhook_secret:
-            self.sudo().woo_webhook_secret = secrets.token_urlsafe(32)
-        return self.woo_webhook_secret
+    @api.constrains('public_webhook_url')
+    def _check_public_webhook_url(self):
+        for instance in self:
+            if not instance.public_webhook_url:
+                continue
+            instance._woo_normalize_public_webhook_url(
+                instance.public_webhook_url, raise_error=True,
+            )
 
-    def action_woo_register_customer_webhooks(self):
-        """Create or refresh customer.created/updated/deleted webhooks on WooCommerce."""
-        self.ensure_one()
-        if self.platform_type != 'woocommerce':
-            raise UserError(self.env._('Only WooCommerce instances support these webhooks.'))
-        self._ensure_woo_ready()
-        if not (self.woo_webhook_public_base_url or '').strip():
-            raise UserError(self.env._(
-                'Set Public Odoo Base URL first. WooCommerce must reach a public HTTPS '
-                'endpoint (or a tunnel/local URL for development).'
-            ))
-        secret = self._woo_ensure_webhook_secret()
-        delivery_url = self.woo_webhook_endpoint_url
-        api = self._woo_api()
-        existing = dict(self.woo_webhook_ids or {})
-        errors = []
-        for topic in _CUSTOMER_WEBHOOK_TOPICS:
-            payload = {
-                'name': f'Kits Odoo — {topic} ({self.name})',
-                'topic': topic,
-                'delivery_url': delivery_url,
-                'secret': secret,
-                'status': 'active',
-            }
-            try:
-                webhook_id = existing.get(topic)
-                if webhook_id:
-                    remote = api.update_webhook(int(webhook_id), payload)
-                else:
-                    remote = api.create_webhook(payload)
-                new_id = remote.get('id')
-                if not new_id:
-                    raise ValueError(self.env._('WooCommerce did not return a webhook id'))
-                existing[topic] = int(new_id)
-            except Exception as exc:  # noqa: BLE001
-                errors.append(f'{topic}: {exc}')
-                _logger.exception(
-                    'Failed to register Woo webhook %s for instance %s', topic, self.id,
+    @api.model_create_multi
+    def create(self, vals_list):
+        for vals in vals_list:
+            if vals.get('public_webhook_url'):
+                vals['public_webhook_url'] = self._woo_normalize_public_webhook_url(
+                    vals['public_webhook_url'], raise_error=True,
                 )
-        self.sudo().write({
-            'woo_webhook_ids': existing,
-            'woo_webhook_enabled': bool(existing) and not errors,
-        })
-        if errors and not existing:
+            elif vals.get('woo_webhook_public_base_url'):
+                vals['public_webhook_url'] = self._woo_normalize_public_webhook_url(
+                    vals.pop('woo_webhook_public_base_url'), raise_error=True,
+                )
+        return super().create(vals_list)
+
+    def write(self, vals):
+        vals = dict(vals)
+        if 'public_webhook_url' in vals and vals.get('public_webhook_url'):
+            vals['public_webhook_url'] = self._woo_normalize_public_webhook_url(
+                vals['public_webhook_url'], raise_error=True,
+            )
+        elif 'woo_webhook_public_base_url' in vals and vals.get('woo_webhook_public_base_url'):
+            # Alias write path — related field forwards onto public_webhook_url.
+            vals['woo_webhook_public_base_url'] = self._woo_normalize_public_webhook_url(
+                vals['woo_webhook_public_base_url'], raise_error=True,
+            )
+        deactivating_ids = set()
+        if 'active' in vals and not vals.get('active'):
+            for rec in self:
+                if rec.active:
+                    deactivating_ids.add(rec.id)
+
+        # Never treat legacy switches as the modern source of truth on save.
+        # Allow migration/context writes via explicit flag.
+        if not self.env.context.get('kits_woo_webhook_legacy_write'):
+            vals.pop('woo_webhook_enabled', None)
+            vals.pop('woo_resource_webhooks_enabled', None)
+
+        # Direct writes to stored switches (tests/API) still go through orchestration
+        # unless the caller already finished API work.
+        direct_changes = {}
+        if not self.env.context.get('kits_woo_webhook_skip_orchestrate'):
+            for stored in _RESOURCE_SWITCH_FIELDS.values():
+                if stored in vals:
+                    new_val = bool(vals.pop(stored))
+                    for rec in self:
+                        if bool(rec[stored]) != new_val:
+                            direct_changes.setdefault(rec.id, {})[stored] = new_val
+
+        res = super().write(vals)
+
+        pending = getattr(self.env, '_woo_webhook_switch_pending', {}) or {}
+        for rec in self:
+            intent = pending.pop(rec.id, None) or {}
+            changes = dict(direct_changes.get(rec.id) or {})
+            for stored, desired in intent.items():
+                if bool(rec[stored]) != bool(desired):
+                    changes[stored] = bool(desired)
+            if changes and not self.env.context.get('kits_woo_webhook_skip_orchestrate'):
+                rec._woo_apply_webhook_switch_changes(changes)
+            if rec.id in deactivating_ids:
+                rec._woo_cleanup_webhooks_on_deactivate()
+        return res
+
+    # -------------------------------------------------------------------------
+    # Resource helpers
+    # -------------------------------------------------------------------------
+
+    @api.model
+    def _woo_resource_topics(self, resource):
+        return _RESOURCE_WEBHOOK_TOPICS.get(resource) or ()
+
+    @api.model
+    def _woo_resource_for_switch(self, stored_field):
+        for resource, field in _RESOURCE_SWITCH_FIELDS.items():
+            if field == stored_field:
+                return resource
+        return False
+
+    def _woo_delivery_url_for_resource(self, resource):
+        self.ensure_one()
+        public_base = self._woo_get_public_base_url()
+        if not public_base:
             raise UserError(self.env._(
-                'Could not register customer webhooks:\n%(errors)s',
+                'Odoo has no public base URL. Set Public Webhook URL on this '
+                'store, or ensure get_base_url() / web.base.url is configured '
+                'to an origin WooCommerce can reach.'
+            ))
+        if not self.id:
+            raise UserError(self.env._(
+                'Save the store before enabling webhooks.'
+            ))
+        return f'{public_base}/kits_woo/webhook/{self.id}/{resource}'
+
+    def _woo_webhook_default_name(self, topic):
+        self.ensure_one()
+        return f'Kits Odoo — {topic} ({self.name})'
+
+    def _woo_find_webhook(self, topic):
+        self.ensure_one()
+        return self.env['kits.woo.webhook'].sudo().search([
+            ('instance_id', '=', self.id),
+            ('topic', '=', topic),
+        ], limit=1)
+
+    def _woo_normalize_host(self, url):
+        if not url:
+            return ''
+        parsed = urlparse(url if '://' in url else f'https://{url}')
+        host = (parsed.netloc or parsed.path or '').lower().strip()
+        if host.startswith('www.'):
+            host = host[4:]
+        return host.split(':')[0]
+
+    def _woo_source_matches_store(self, source_header):
+        self.ensure_one()
+        store_host = self._woo_normalize_host(self.base_url)
+        source_host = self._woo_normalize_host(source_header)
+        return bool(store_host and source_host and store_host == source_host)
+
+    # -------------------------------------------------------------------------
+    # Orchestration
+    # -------------------------------------------------------------------------
+
+    def _woo_apply_webhook_switch_changes(self, changes):
+        """Apply enable/disable for changed stored switches only."""
+        self.ensure_one()
+        errors = []
+        for stored, desired in changes.items():
+            resource = self._woo_resource_for_switch(stored)
+            if not resource:
+                continue
+            try:
+                self._woo_refresh_webhooks(resources=[resource])
+                if desired:
+                    ok = self._woo_enable_webhook_resource(resource)
+                else:
+                    ok = self._woo_disable_webhook_resource(resource)
+                # Only flip the stored switch when every topic for the resource succeeded.
+                if ok:
+                    self.with_context(kits_woo_webhook_skip_orchestrate=True).sudo().write({
+                        stored: desired,
+                    })
+            except UserError as exc:
+                errors.append(str(exc))
+            except Exception as exc:  # noqa: BLE001
+                _logger.exception(
+                    'Webhook switch change failed for %s on instance %s',
+                    resource, self.id,
+                )
+                errors.append(f'{resource}: {exc}')
+        if errors:
+            raise UserError(self.env._(
+                'Webhook configuration failed:\n%(errors)s',
                 errors='\n'.join(errors),
             ))
+
+    def _woo_notify_partial_webhook_failure(self, message):
+        """Show a sticky danger notification without rolling back sibling successes."""
+        self.ensure_one()
+        try:
+            self.env['bus.bus']._sendone(
+                self.env.user.partner_id,
+                'simple_notification',
+                {
+                    'title': self.env._('WooCommerce Webhooks'),
+                    'message': message,
+                    'type': 'danger',
+                    'sticky': True,
+                },
+            )
+        except Exception:  # noqa: BLE001
+            _logger.warning('Could not send webhook partial-failure notification')
+
+    def _woo_enable_webhook_resource(self, resource):
+        """Enable a resource. Returns True on full success.
+
+        Partial success keeps registered sibling topics, leaves the stored switch
+        unchanged (caller), logs failures, and notifies without raising so the
+        transaction is not rolled back.
+        """
+        self.ensure_one()
+        self._ensure_woo_ready()
+        if not self._woo_get_public_base_url():
+            raise UserError(self.env._(
+                'Odoo has no public base URL. Set Public Webhook URL on this '
+                'store, or configure web.base.url / get_base_url() first.'
+            ))
+        topics = self._woo_resource_topics(resource)
+        if not topics:
+            raise UserError(self.env._(
+                'Unknown webhook resource %(resource)s.',
+                resource=resource,
+            ))
+        Webhook = self.env['kits.woo.webhook'].sudo()
+        errors = []
+        successes = []
+        for topic in topics:
+            try:
+                with self.env.cr.savepoint():
+                    record = self._woo_find_webhook(topic)
+                    desired_url = self._get_webhook_delivery_url(topic)
+                    if not record:
+                        record = Webhook.create({
+                            'name': self._woo_webhook_default_name(topic),
+                            'instance_id': self.id,
+                            'topic': topic,
+                            'delivery_url': desired_url,
+                            'secret': Webhook._woo_generate_secret(),
+                            'status': 'paused',
+                        })
+
+                    if record.webhook_id:
+                        remote_url = (record.delivery_url or '').rstrip('/')
+                        needs_url_push = remote_url != desired_url.rstrip('/')
+                        if needs_url_push:
+                            # PUT full payload (delivery_url + active). Do not
+                            # refresh first — refresh would pull the old remote URL.
+                            record._woo_register_remote()
+                        elif record.status == 'active':
+                            record._woo_refresh_from_remote()
+                        else:
+                            try:
+                                record._woo_set_remote_status('active')
+                            except UserError as exc:
+                                if record.status == 'disabled':
+                                    raise UserError(self.env._(
+                                        'WooCommerce webhook %(topic)s is disabled '
+                                        'remotely and could not be reactivated '
+                                        '(%(err)s). Use Activate after fixing delivery '
+                                        'issues, or Delete and re-enable.',
+                                        topic=topic,
+                                        err=exc,
+                                    )) from exc
+                                raise
+                    else:
+                        # Always generate delivery URL from the effective public
+                        # base at registration time (never reuse a stale value).
+                        record._woo_register_remote()
+                    successes.append(topic)
+            except Exception as exc:  # noqa: BLE001
+                errors.append(f'{topic}: {exc}')
+                leftover = self._woo_find_webhook(topic)
+                if leftover and leftover.webhook_id:
+                    leftover.sudo().write({'last_error': str(exc)})
+        if errors:
+            detail = '\n'.join(errors)
+            if successes:
+                message = self.env._(
+                    'Enabled %(ok)s topic(s) for %(resource)s, but failed:\n%(errors)s. '
+                    'The resource switch was left disabled.',
+                    ok=', '.join(successes),
+                    resource=resource,
+                    errors=detail,
+                )
+                self._kits_log_operation(
+                    operation='woo_webhook_enable',
+                    status='failure',
+                    level='error',
+                    message=message,
+                )
+                self._woo_notify_partial_webhook_failure(message)
+                return False
+            raise UserError(self.env._(
+                'Could not enable %(resource)s webhooks:\n%(errors)s',
+                resource=resource,
+                errors=detail,
+            ))
+
+        self._kits_log_operation(
+            operation='woo_webhook_enable',
+            status='success',
+            message=self.env._(
+                'Enabled %(resource)s webhooks on %(store)s (%(topics)s).',
+                resource=resource,
+                store=self.display_name,
+                topics=', '.join(topics),
+            ),
+        )
+        return True
+
+    def _woo_disable_webhook_resource(self, resource):
+        """Pause a resource. Returns True on full success; False on partial."""
+        self.ensure_one()
+        topics = self._woo_resource_topics(resource)
+        if not topics:
+            raise UserError(self.env._(
+                'Unknown webhook resource %(resource)s.',
+                resource=resource,
+            ))
+        errors = []
+        successes = []
+        for topic in topics:
+            record = self._woo_find_webhook(topic)
+            if not record:
+                continue
+            try:
+                with self.env.cr.savepoint():
+                    if not record.webhook_id:
+                        record.sudo().write({'status': 'paused', 'last_error': False})
+                    else:
+                        self._ensure_woo_ready()
+                        record._woo_set_remote_status('paused')
+                    successes.append(topic)
+            except Exception as exc:  # noqa: BLE001
+                errors.append(f'{topic}: {exc}')
+
+        if errors:
+            detail = '\n'.join(errors)
+            if successes:
+                message = self.env._(
+                    'Paused %(ok)s topic(s) for %(resource)s, but failed:\n%(errors)s. '
+                    'The resource switch was left enabled.',
+                    ok=', '.join(successes),
+                    resource=resource,
+                    errors=detail,
+                )
+                self._kits_log_operation(
+                    operation='woo_webhook_disable',
+                    status='failure',
+                    level='error',
+                    message=message,
+                )
+                self._woo_notify_partial_webhook_failure(message)
+                return False
+            raise UserError(self.env._(
+                'Could not pause %(resource)s webhooks:\n%(errors)s',
+                resource=resource,
+                errors=detail,
+            ))
+
+        self._kits_log_operation(
+            operation='woo_webhook_disable',
+            status='success',
+            message=self.env._(
+                'Paused %(resource)s webhooks on %(store)s (records retained).',
+                resource=resource,
+                store=self.display_name,
+            ),
+        )
+        return True
+
+    def action_woo_refresh_webhooks(self):
+        self.ensure_one()
+        self._ensure_woo_ready()
+        result = self._woo_refresh_webhooks()
+        return self._woo_notify(result)
+
+    def action_woo_rebuild_webhook_delivery_urls(self):
+        """PUT new delivery URLs onto existing remote webhooks (no recreate)."""
+        self.ensure_one()
+        self._ensure_woo_ready()
+        if not self._woo_get_public_base_url():
+            raise UserError(self.env._(
+                'Odoo has no public base URL. Set Public Webhook URL or '
+                'web.base.url before rebuilding delivery URLs.'
+            ))
+        webhooks = self.env['kits.woo.webhook'].sudo().search([
+            ('instance_id', '=', self.id),
+        ])
+        if not webhooks:
+            return self._woo_notify(self.env._(
+                'No local webhook records to rebuild for %(store)s.',
+                store=self.display_name,
+            ))
+
+        updated = skipped = 0
+        errors = []
+        for webhook in webhooks:
+            try:
+                with self.env.cr.savepoint():
+                    outcome = webhook._woo_rebuild_delivery_url()
+                if outcome == 'updated':
+                    updated += 1
+                elif outcome == 'unchanged':
+                    skipped += 1
+                else:
+                    errors.append(f'{webhook.topic}: unexpected result {outcome}')
+            except Exception as exc:  # noqa: BLE001
+                # Savepoint rolls back in-method last_error writes; persist here.
+                webhook.sudo().write({'last_error': str(exc)})
+                errors.append(f'{webhook.topic}: {exc}')
+
         message = self.env._(
-            'Customer webhooks registered for %(store)s (%(count)s topics).',
-            store=self.name,
-            count=len(existing),
+            'Rebuild delivery URLs for %(store)s: %(updated)s updated, '
+            '%(skipped)s unchanged, %(errors)s failed.',
+            store=self.display_name,
+            updated=updated,
+            skipped=skipped,
+            errors=len(errors),
         )
         if errors:
-            message = f'{message}\n' + '\n'.join(errors)
+            detail = '; '.join(errors[:8])
+            if len(errors) > 8:
+                detail = f'{detail}; …'
+            message = f'{message}\n{detail}'
+            self._kits_log_operation(
+                operation='woo_webhook_rebuild_delivery_url',
+                status='failure',
+                level='error',
+                message=message,
+            )
+            # Do not raise: raising would roll back successful sibling PUT updates
+            # and last_error writes. Surface failure via sticky notification.
+            return self._woo_notify(message, sticky=True, notify_type='danger')
+
+        self._kits_log_operation(
+            operation='woo_webhook_rebuild_delivery_url',
+            status='success',
+            message=message,
+        )
         return self._woo_notify(message)
+
+    # Compatibility wrappers for upgrade-time view validation (old header buttons).
+    def action_woo_register_customer_webhooks(self):
+        self.ensure_one()
+        self.write({'woo_webhook_customer_enabled': True})
+        return self._woo_notify(self.env._(
+            'Customer webhooks enabled for %(store)s.',
+            store=self.name,
+        ))
 
     def action_woo_unregister_customer_webhooks(self):
         self.ensure_one()
-        if self.platform_type != 'woocommerce':
-            raise UserError(self.env._('Only WooCommerce instances support these webhooks.'))
-        existing = dict(self.woo_webhook_ids or {})
-        to_remove = {t: existing[t] for t in _CUSTOMER_WEBHOOK_TOPICS if t in existing}
-        if not to_remove:
-            self.woo_webhook_enabled = False
-            return self._woo_notify(self.env._('No registered customer webhooks to remove.'))
-        self._ensure_woo_ready()
-        api = self._woo_api()
-        errors = []
-        for topic, webhook_id in list(to_remove.items()):
-            try:
-                api.delete_webhook(int(webhook_id), force=True)
-                existing.pop(topic, None)
-            except Exception as exc:  # noqa: BLE001
-                errors.append(f'{topic} ({webhook_id}): {exc}')
-        self.sudo().write({
-            'woo_webhook_ids': existing or False,
-            'woo_webhook_enabled': False,
+        self.write({'woo_webhook_customer_enabled': False})
+        return self._woo_notify(self.env._(
+            'Customer webhooks paused for %(store)s.',
+            store=self.name,
+        ))
+
+    def action_woo_register_resource_webhooks(self):
+        self.ensure_one()
+        self.write({
+            'woo_webhook_product_enabled': True,
+            'woo_webhook_order_enabled': True,
+            'woo_webhook_coupon_enabled': True,
         })
-        message = self.env._('Customer webhooks disabled for %(store)s.', store=self.name)
+        return self._woo_notify(self.env._(
+            'Product, order, and coupon webhooks enabled for %(store)s.',
+            store=self.name,
+        ))
+
+    def action_woo_unregister_resource_webhooks(self):
+        self.ensure_one()
+        self.write({
+            'woo_webhook_product_enabled': False,
+            'woo_webhook_order_enabled': False,
+            'woo_webhook_coupon_enabled': False,
+        })
+        return self._woo_notify(self.env._(
+            'Product, order, and coupon webhooks paused for %(store)s.',
+            store=self.name,
+        ))
+
+    def _woo_refresh_webhooks(self, resources=None):
+        self.ensure_one()
+        domain = [('instance_id', '=', self.id)]
+        if resources:
+            topics = []
+            for resource in resources:
+                topics.extend(self._woo_resource_topics(resource))
+            domain.append(('topic', 'in', topics))
+        webhooks = self.env['kits.woo.webhook'].sudo().search(domain)
+        ok = removed = errors = 0
+        for webhook in webhooks:
+            outcome = webhook._woo_refresh_from_remote()
+            if outcome == 'ok':
+                ok += 1
+            elif outcome == 'removed':
+                removed += 1
+            else:
+                errors += 1
+        message = self.env._(
+            'Webhook refresh for %(store)s: %(ok)s synced, %(removed)s removed, '
+            '%(errors)s errors.',
+            store=self.display_name,
+            ok=ok,
+            removed=removed,
+            errors=errors,
+        )
+        self._kits_log_operation(
+            operation='woo_webhook_refresh',
+            status='failure' if errors else 'success',
+            level='error' if errors else 'info',
+            message=message,
+        )
         if errors:
-            message = f'{message}\n' + '\n'.join(errors)
-        return self._woo_notify(message)
+            raise UserError(message)
+        return message
+
+    def _woo_cleanup_webhooks_on_deactivate(self):
+        """Delete remote webhooks and local records; clear switches; stop auto jobs."""
+        self.ensure_one()
+        Webhook = self.env['kits.woo.webhook'].sudo()
+        webhooks = Webhook.search([('instance_id', '=', self.id)])
+        failures = []
+        for webhook in webhooks:
+            try:
+                # Store is inactive; call API delete without _ensure_woo_ready active check
+                remote_id = webhook.webhook_id
+                if remote_id:
+                    try:
+                        # Temporarily allow API via sudo write path — use API directly
+                        api = self._woo_api()
+                        api.delete_webhook(int(remote_id), force=True)
+                    except Exception as exc:  # noqa: BLE001
+                        from odoo.addons.kits_odoo_base_connector.services.exceptions import (
+                            ConnectorError,
+                        )
+                        if isinstance(exc, ConnectorError) and getattr(exc, 'status_code', None) == 404:
+                            webhook.unlink()
+                            continue
+                        webhook.last_error = str(exc)
+                        failures.append(f'{webhook.topic}: {exc}')
+                        self._kits_log_operation(
+                            operation='woo_webhook_deactivate',
+                            status='failure',
+                            level='error',
+                            message=self.env._(
+                                'Deactivate cleanup failed for %(topic)s (%(rid)s): %(err)s',
+                                topic=webhook.topic,
+                                rid=remote_id,
+                                err=exc,
+                            ),
+                        )
+                        continue
+                webhook.unlink()
+            except Exception as exc:  # noqa: BLE001
+                failures.append(str(exc))
+
+        self.with_context(kits_woo_webhook_skip_orchestrate=True).sudo().write({
+            'woo_webhook_product_enabled': False,
+            'woo_webhook_customer_enabled': False,
+            'woo_webhook_order_enabled': False,
+            'woo_webhook_coupon_enabled': False,
+            'woo_auto_import_orders': False,
+            'woo_auto_export_products': False,
+            'woo_auto_export_stock': False,
+        })
+        self._kits_log_operation(
+            operation='woo_webhook_deactivate',
+            status='failure' if failures else 'success',
+            level='error' if failures else 'info',
+            message=self.env._(
+                'Store %(store)s deactivated: webhook cleanup done'
+                '%(fail)s.',
+                store=self.display_name,
+                fail=('; failures: ' + '; '.join(failures)) if failures else '',
+            ),
+        )
+
+    # -------------------------------------------------------------------------
+    # Signature + enqueue (security)
+    # -------------------------------------------------------------------------
 
     @api.model
     def _woo_verify_webhook_signature(self, raw_body, signature_header, secret):
@@ -218,13 +923,22 @@ class KitsConnectorInstanceWebhook(models.Model):
         expected = base64.b64encode(digest).decode('ascii')
         return hmac.compare_digest(expected, signature_header.strip())
 
+    def _woo_find_webhook_by_remote_id(self, remote_webhook_id):
+        self.ensure_one()
+        if not remote_webhook_id:
+            return self.env['kits.woo.webhook']
+        return self.env['kits.woo.webhook'].sudo().search([
+            ('instance_id', '=', self.id),
+            ('webhook_id', '=', str(remote_webhook_id)),
+        ], limit=1)
+
     def _woo_enqueue_customer_webhook(self, *, topic, delivery_id, woo_id, payload_body,
                                       body_hash):
         """Enqueue async processing; skip if the same delivery was already queued/done."""
         self.ensure_one()
         Job = self.env['kits.connector.sync.job'].sudo()
         recent = Job.search([
-            ('instance_id', '=', self.id),
+            ('instance_id', '=', self._kits_instance_ref()),
             ('job_type', '=', 'woo_webhook_customer'),
             ('state', 'in', ('pending', 'running', 'done', 'cancelled')),
         ], order='id desc', limit=80)
@@ -237,7 +951,6 @@ class KitsConnectorInstanceWebhook(models.Model):
                 if (job.payload or {}).get('body_hash') == body_hash:
                     return job
 
-        # Stale protection: newer delivery for same woo_id+topic supersedes older pending
         if woo_id and topic:
             for job in recent.filtered(lambda j: j.state == 'pending'):
                 p = job.payload or {}
@@ -289,8 +1002,6 @@ class KitsConnectorInstanceWebhook(models.Model):
                 woo_id = customer.get('id')
             if not woo_id:
                 return self.env._('Skipped customer.deleted without id.')
-            # Soft-delete only when a customer binding exists. Role is often omitted
-            # on delete payloads; never create a binding from a delete event.
             binding = self.env['kits.woo.customer.binding']._find(
                 self, external_id=str(woo_id),
             )
@@ -375,7 +1086,6 @@ class KitsConnectorInstanceWebhook(models.Model):
             body_hash=body_hash,
             trigger_batch=True,
         )
-        # Apply this delivery via the waiting-list processor (dedupe + history).
         if row.state == 'pending':
             row._process_entries(job=job)
         partner = row.partner_id
@@ -387,98 +1097,6 @@ class KitsConnectorInstanceWebhook(models.Model):
             id=customer.get('id'),
             partner=f' / {partner.display_name}' if partner else '',
         )
-
-    # -------------------------------------------------------------------------
-    # Non-customer resource webhooks (products / orders / coupons)
-    # -------------------------------------------------------------------------
-
-    def action_woo_register_resource_webhooks(self):
-        """Register product/order/coupon webhooks (does not touch customer topics)."""
-        self.ensure_one()
-        if self.platform_type != 'woocommerce':
-            raise UserError(self.env._('Only WooCommerce instances support these webhooks.'))
-        self._ensure_woo_ready()
-        if not (self.woo_webhook_public_base_url or '').strip():
-            raise UserError(self.env._(
-                'Set Public Odoo Base URL first. WooCommerce must reach a public HTTPS '
-                'endpoint (or a tunnel/local URL for development).'
-            ))
-        secret = self._woo_ensure_webhook_secret()
-        api = self._woo_api()
-        existing = dict(self.woo_webhook_ids or {})
-        errors = []
-        registered = 0
-        for resource, topics in _RESOURCE_WEBHOOK_TOPICS.items():
-            delivery_url = f'{self.woo_webhook_resource_base_url}/{resource}'
-            for topic in topics:
-                payload = {
-                    'name': f'Kits Odoo — {topic} ({self.name})',
-                    'topic': topic,
-                    'delivery_url': delivery_url,
-                    'secret': secret,
-                    'status': 'active',
-                }
-                try:
-                    webhook_id = existing.get(topic)
-                    if webhook_id:
-                        remote = api.update_webhook(int(webhook_id), payload)
-                    else:
-                        remote = api.create_webhook(payload)
-                    new_id = remote.get('id')
-                    if not new_id:
-                        raise ValueError(self.env._('WooCommerce did not return a webhook id'))
-                    existing[topic] = int(new_id)
-                    registered += 1
-                except Exception as exc:  # noqa: BLE001
-                    errors.append(f'{topic}: {exc}')
-                    _logger.exception(
-                        'Failed to register Woo webhook %s for instance %s', topic, self.id,
-                    )
-        self.sudo().write({
-            'woo_webhook_ids': existing,
-            'woo_resource_webhooks_enabled': registered > 0 and not errors,
-        })
-        if errors and registered == 0:
-            raise UserError(self.env._(
-                'Could not register resource webhooks:\n%(errors)s',
-                errors='\n'.join(errors),
-            ))
-        message = self.env._(
-            'Resource webhooks registered for %(store)s (%(count)s topics).',
-            store=self.name,
-            count=registered,
-        )
-        if errors:
-            message = f'{message}\n' + '\n'.join(errors)
-        return self._woo_notify(message)
-
-    def action_woo_unregister_resource_webhooks(self):
-        self.ensure_one()
-        existing = dict(self.woo_webhook_ids or {})
-        resource_topics = {
-            t for topics in _RESOURCE_WEBHOOK_TOPICS.values() for t in topics
-        }
-        to_remove = {t: existing[t] for t in resource_topics if t in existing}
-        if not to_remove:
-            self.woo_resource_webhooks_enabled = False
-            return self._woo_notify(self.env._('No resource webhooks to remove.'))
-        self._ensure_woo_ready()
-        api = self._woo_api()
-        errors = []
-        for topic, webhook_id in list(to_remove.items()):
-            try:
-                api.delete_webhook(int(webhook_id), force=True)
-                existing.pop(topic, None)
-            except Exception as exc:  # noqa: BLE001
-                errors.append(f'{topic} ({webhook_id}): {exc}')
-        self.sudo().write({
-            'woo_webhook_ids': existing or False,
-            'woo_resource_webhooks_enabled': False,
-        })
-        message = self.env._('Resource webhooks disabled for %(store)s.', store=self.name)
-        if errors:
-            message = f'{message}\n' + '\n'.join(errors)
-        return self._woo_notify(message)
 
     def _woo_enqueue_resource_webhook(self, *, resource, topic, delivery_id, woo_id,
                                       payload_body, body_hash):
@@ -498,7 +1116,7 @@ class KitsConnectorInstanceWebhook(models.Model):
 
         Job = self.env['kits.connector.sync.job'].sudo()
         recent = Job.search([
-            ('instance_id', '=', self.id),
+            ('instance_id', '=', self._kits_instance_ref()),
             ('job_type', '=', job_type),
             ('state', 'in', ('pending', 'running', 'done', 'cancelled')),
         ], order='id desc', limit=80)
@@ -596,15 +1214,11 @@ class KitsConnectorInstanceWebhook(models.Model):
                 id=product.get('id'),
             )
 
-        # Hard protection: strip stock fields so Woo never overwrites Odoo SoT inventory
         for key in (
             'stock_quantity', 'stock_status', 'manage_stock',
             'low_stock_amount', 'backorders',
         ):
             product.pop(key, None)
-        if product.get('type') == 'variable' and product.get('variations'):
-            # variations list is ids only usually; ignore
-            pass
 
         result = self._woo_import_one_product(product)
         return self.env._(

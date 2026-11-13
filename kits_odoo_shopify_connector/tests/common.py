@@ -12,7 +12,7 @@ class ShopifyConnectorCommon(TransactionCase):
         super().setUpClass()
         cls.company = cls.env.company
         cls.token = 'shpat_unit_test_value'
-        cls.instance = cls.env['kits.connector.instance'].create({
+        cls.instance = cls.env['kits.shopify.instance'].create({
             'name': 'Test Shopify Store',
             'platform_type': 'shopify',
             'company_id': cls.company.id,
@@ -31,7 +31,7 @@ class ShopifyConnectorCommon(TransactionCase):
 
     def assert_token_not_stored_in_logs(self, token, instance, extra=''):
         logs = self.env['kits.connector.log'].search([
-            ('instance_id', '=', instance.id),
+            ('instance_id', '=', instance._kits_instance_ref()),
         ])
         chunks = [extra or '', instance.last_error or '']
         for log in logs:

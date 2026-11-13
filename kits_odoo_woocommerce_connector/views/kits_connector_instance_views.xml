@@ -1,9 +1,120 @@
 <?xml version="1.0" encoding="utf-8"?>
 <odoo>
+    <record id="kits_woo_instance_view_list" model="ir.ui.view">
+        <field name="name">kits.woo.instance.list</field>
+        <field name="model">kits.woo.instance</field>
+        <field name="arch" type="xml">
+            <list string="WooCommerce Stores">
+                <field name="name"/>
+                <field name="platform_type" optional="hide"/>
+                <field name="company_id" groups="base.group_multi_company"/>
+                <field name="state" widget="badge"
+                         decoration-success="state == 'connected'"
+                         decoration-danger="state == 'error'"
+                         decoration-muted="state in ('draft', 'disconnected')"/>
+                <field name="base_url" optional="show"/>
+                <field name="warehouse_id" optional="hide"/>
+                <field name="woo_last_order_sync" optional="hide"/>
+                <field name="last_connection_test" optional="hide"/>
+                <field name="active" column_invisible="True"/>
+            </list>
+        </field>
+    </record>
+
+    <record id="kits_woo_instance_view_form" model="ir.ui.view">
+        <field name="name">kits.woo.instance.form</field>
+        <field name="model">kits.woo.instance</field>
+        <field name="arch" type="xml">
+            <form string="WooCommerce Store">
+                <header>
+                    <button name="action_test_connection"
+                            type="object"
+                            string="Test Connection"
+                            class="btn-primary"
+                            groups="kits_odoo_base_connector.group_kits_connector_manager"/>
+                    <button name="action_set_disconnected"
+                            type="object"
+                            string="Mark Disconnected"
+                            invisible="state == 'disconnected'"
+                            groups="kits_odoo_base_connector.group_kits_connector_manager"/>
+                    <field name="state" widget="statusbar"
+                             statusbar_visible="draft,connected,error,disconnected"/>
+                </header>
+                <sheet>
+                    <div class="oe_button_box" name="button_box">
+                        <button name="action_view_sync_jobs" type="object" class="oe_stat_button" icon="checklist">
+                            <field name="sync_job_count" widget="statinfo" string="Sync Jobs"/>
+                        </button>
+                        <button name="action_view_logs" type="object" class="oe_stat_button" icon="article">
+                            <field name="log_count" widget="statinfo" string="Logs"/>
+                        </button>
+                        <button name="action_view_bindings" type="object" class="oe_stat_button" icon="link">
+                            <field name="binding_count" widget="statinfo" string="Bindings"/>
+                        </button>
+                    </div>
+                    <widget name="web_ribbon" title="Archived" bg_color="text-bg-danger" invisible="active"/>
+                    <div class="oe_title">
+                        <label for="name"/>
+                        <h1>
+                            <field name="name" placeholder="e.g. Main Store"/>
+                        </h1>
+                    </div>
+                    <group>
+                        <group name="group_connection" string="Connection">
+                            <field name="platform_type" invisible="1"/>
+                            <field name="company_id" groups="base.group_multi_company"/>
+                            <field name="base_url" placeholder="https://example.com"/>
+                            <field name="timeout"/>
+                            <field name="active"/>
+                        </group>
+                        <group name="group_credentials"
+                               string="Credentials"
+                               groups="kits_odoo_base_connector.group_kits_connector_manager">
+                            <field name="api_key" widget="password" invisible="1"/>
+                            <field name="api_secret" widget="password" invisible="1"/>
+                            <field name="last_connection_test"/>
+                            <field name="last_error"/>
+                        </group>
+                    </group>
+                    <notebook>
+                        <page string="Extra Configuration" name="config">
+                            <field name="config_json"/>
+                            <field name="notes" placeholder="Internal notes"/>
+                        </page>
+                    </notebook>
+                </sheet>
+                <chatter/>
+            </form>
+        </field>
+    </record>
+
+    <record id="kits_woo_instance_view_search" model="ir.ui.view">
+        <field name="name">kits.woo.instance.search</field>
+        <field name="model">kits.woo.instance</field>
+        <field name="arch" type="xml">
+            <search string="Search WooCommerce Stores">
+                <field name="name"/>
+                <field name="base_url"/>
+                <field name="company_id"/>
+                <filter string="WooCommerce"
+                        name="filter_woocommerce"
+                        domain="[('platform_type', '=', 'woocommerce')]"/>
+                <separator/>
+                <filter string="Connected" name="filter_connected" domain="[('state', '=', 'connected')]"/>
+                <filter string="Error" name="filter_error" domain="[('state', '=', 'error')]"/>
+                <filter string="Archived" name="filter_inactive" domain="[('active', '=', False)]"/>
+                <separator/>
+                <filter string="Company" name="group_company" context="{'group_by': 'company_id'}"/>
+                <filter string="Status" name="group_state" context="{'group_by': 'state'}"/>
+            </search>
+        </field>
+    </record>
+
+
     <record id="kits_connector_instance_view_form_woo" model="ir.ui.view">
-        <field name="name">kits.connector.instance.form.woocommerce</field>
-        <field name="model">kits.connector.instance</field>
-        <field name="inherit_id" ref="kits_odoo_base_connector.kits_connector_instance_view_form"/>
+        <field name="name">kits.woo.instance.form.woocommerce</field>
+        <field name="model">kits.woo.instance</field>
+        <field name="inherit_id" ref="kits_woo_instance_view_form"/>
         <field name="arch" type="xml">
             <xpath expr="//header" position="inside">
                 <button name="action_woo_open_sync_wizard"
@@ -16,26 +127,6 @@
                         type="object"
                         string="Export Products"
                         invisible="platform_type != 'woocommerce'"
-                        groups="kits_odoo_base_connector.group_kits_connector_manager"/>
-                <button name="action_woo_register_customer_webhooks"
-                        type="object"
-                        string="Register Customer Webhooks"
-                        invisible="platform_type != 'woocommerce'"
-                        groups="kits_odoo_base_connector.group_kits_connector_manager"/>
-                <button name="action_woo_unregister_customer_webhooks"
-                        type="object"
-                        string="Unregister Customer Webhooks"
-                        invisible="platform_type != 'woocommerce' or not woo_webhook_enabled"
-                        groups="kits_odoo_base_connector.group_kits_connector_manager"/>
-                <button name="action_woo_register_resource_webhooks"
-                        type="object"
-                        string="Register Catalog/Order Webhooks"
-                        invisible="platform_type != 'woocommerce'"
-                        groups="kits_odoo_base_connector.group_kits_connector_manager"/>
-                <button name="action_woo_unregister_resource_webhooks"
-                        type="object"
-                        string="Unregister Catalog/Order Webhooks"
-                        invisible="platform_type != 'woocommerce' or not woo_resource_webhooks_enabled"
                         groups="kits_odoo_base_connector.group_kits_connector_manager"/>
             </xpath>
 
@@ -106,9 +197,8 @@
                         <group string="Orders &amp; Automation">
                             <field name="woo_allow_unmapped_order_lines"/>
                             <field name="woo_order_statuses"/>
-                            <field name="woo_update_customer_on_order_import"/>
+                            <field name="kits_auto_confirm_order"/>
                             <field name="woo_auto_import_orders"/>
-                            <field name="woo_auto_import_customers"/>
                             <field name="woo_auto_export_products"/>
                             <field name="woo_auto_export_stock"/>
                         </group>
@@ -117,12 +207,8 @@
                 <page string="WooCommerce Sync Status"
                       name="woo_status"
                       invisible="platform_type != 'woocommerce'">
-                    <group>
-                        <group string="Connection">
-                            <field name="last_connection_test" readonly="1"/>
-                            <field name="last_error" readonly="1"/>
-                        </group>
-                        <group string="Last Sync">
+                    <group col="2">
+                        <group string="Last Sync" name="woo_status_last_sync">
                             <field name="woo_last_product_sync"/>
                             <field name="woo_last_customer_sync"/>
                             <field name="woo_last_order_sync"/>
@@ -130,43 +216,72 @@
                             <field name="woo_last_catalog_sync"/>
                             <field name="woo_last_coupon_sync"/>
                         </group>
-                    </group>
-                    <group>
-                        <group string="Counts">
+                        <group string="Counts" name="woo_status_counts">
                             <field name="woo_bound_product_count"/>
                             <field name="woo_bound_customer_count"/>
                             <field name="woo_imported_order_count"/>
-                            <field name="woo_order_import_failures" widget="text"/>
                         </group>
+                    </group>
+                    <group string="Order Import Failures" name="woo_status_failures">
+                        <field name="woo_order_import_failures"
+                                widget="text"
+                                nolabel="1"
+                                colspan="2"
+                                placeholder="No pending failed order IDs"/>
                     </group>
                 </page>
                 <page string="Webhooks"
                       name="woo_webhooks"
                       invisible="platform_type != 'woocommerce'"
                       groups="kits_odoo_base_connector.group_kits_connector_manager">
-                    <group>
-                        <group string="Delivery">
-                            <field name="woo_webhook_public_base_url"
-                                    placeholder="https://odoo.example.com"/>
-                            <field name="woo_webhook_resource_base_url" readonly="1"/>
-                            <field name="woo_webhook_endpoint_url" readonly="1"/>
-                            <field name="woo_webhook_enabled" readonly="1"/>
-                            <field name="woo_resource_webhooks_enabled" readonly="1"/>
-                            <field name="woo_webhook_secret" widget="password"/>
-                            <!-- woo_webhook_ids stays backend-only (register/unregister bookkeeping). -->
-                        </group>
-                    </group>
                     <div class="alert alert-info" role="status">
-                        WooCommerce must reach a public HTTPS Odoo URL (or a tunnel /
-                        local URL in development). Supported resources: customers,
-                        products, orders, coupons. HMAC-SHA256 verification applies
-                        to all. Remote deletes mark bindings Deleted Remote and never
-                        auto-delete Odoo records. Product webhooks ignore Woo stock
-                        quantities (Odoo remains inventory source of truth).
-                        Multi-DB: prefer dbfilter/single DB. If using X-Odoo-Database,
-                        set system parameter kits_woo.webhook_db_allowlist to an
-                        explicit comma-separated allowlist (arbitrary DB names are rejected).
+                        Enable or pause resource webhooks and set Public Webhook URL
+                        in Settings → WooCommerce. Use Rebuild Webhook Delivery URLs
+                        there after changing the public URL. This tab is for refresh
+                        and per-webhook activate, stop, and delete.
                     </div>
+                    <group>
+                        <button name="action_woo_refresh_webhooks"
+                                type="object"
+                                string="Refresh Webhooks"
+                                class="btn-secondary"
+                                invisible="not active"
+                                groups="kits_odoo_base_connector.group_kits_connector_manager"/>
+                    </group>
+                    <field name="woo_webhook_ids_rel" nolabel="1"
+                           readonly="not active"
+                           context="{'default_instance_id': id}">
+                        <list delete="0">
+                            <field name="name"/>
+                            <field name="topic"/>
+                            <field name="webhook_id"/>
+                            <field name="status" widget="badge"
+                                    decoration-success="status == 'active'"
+                                    decoration-warning="status == 'paused'"
+                                    decoration-danger="status == 'disabled'"/>
+                            <field name="delivery_url"/>
+                            <field name="last_error" optional="hide"/>
+                            <button name="action_toggle_status"
+                                    type="object"
+                                    string="Toggle Status"
+                                    icon="refresh"
+                                    invisible="not parent.active"/>
+                            <button name="action_activate"
+                                    type="object"
+                                    string="Activate"
+                                    invisible="status == 'active' or not parent.active"/>
+                            <button name="action_stop"
+                                    type="object"
+                                    string="Stop"
+                                    invisible="status != 'active' or not parent.active"/>
+                            <button name="action_delete_webhook"
+                                    type="object"
+                                    icon="delete"
+                                    title="Delete"
+                                    confirm="Delete this webhook remotely and locally?"
+                                    invisible="not parent.active"/>
+                        </list>
+                    </field>
                 </page>
                 <page string="Payment &amp; Shipping Maps"
                       name="woo_maps"
@@ -261,9 +376,9 @@
     </record>
 
     <record id="kits_connector_instance_view_list_woo" model="ir.ui.view">
-        <field name="name">kits.connector.instance.list.woocommerce</field>
-        <field name="model">kits.connector.instance</field>
-        <field name="inherit_id" ref="kits_odoo_base_connector.kits_connector_instance_view_list"/>
+        <field name="name">kits.woo.instance.list.woocommerce</field>
+        <field name="model">kits.woo.instance</field>
+        <field name="inherit_id" ref="kits_woo_instance_view_list"/>
         <field name="arch" type="xml">
             <xpath expr="//field[@name='platform_type']" position="after">
                 <field name="warehouse_id" optional="hide"/>
@@ -273,9 +388,9 @@
     </record>
 
     <record id="kits_connector_instance_view_search_woo" model="ir.ui.view">
-        <field name="name">kits.connector.instance.search.woocommerce</field>
-        <field name="model">kits.connector.instance</field>
-        <field name="inherit_id" ref="kits_odoo_base_connector.kits_connector_instance_view_search"/>
+        <field name="name">kits.woo.instance.search.woocommerce</field>
+        <field name="model">kits.woo.instance</field>
+        <field name="inherit_id" ref="kits_woo_instance_view_search"/>
         <field name="arch" type="xml">
             <xpath expr="//filter[@name='filter_connected']" position="before">
                 <filter string="WooCommerce"
@@ -288,12 +403,11 @@
 
     <record id="kits_woo_instance_action" model="ir.actions.act_window">
         <field name="name">WooCommerce Stores</field>
-        <field name="res_model">kits.connector.instance</field>
+        <field name="res_model">kits.woo.instance</field>
         <field name="view_mode">list,form</field>
-        <field name="domain">[('platform_type', '=', 'woocommerce')]</field>
+        <field name="search_view_id" ref="kits_woo_instance_view_search"/>
         <field name="context">{
             'default_platform_type': 'woocommerce',
-            'search_default_filter_woocommerce': 1,
         }</field>
         <field name="help" type="html">
             <p class="o_view_nocontent_smiling_face">
@@ -305,4 +419,5 @@
             </p>
         </field>
     </record>
+
 </odoo>

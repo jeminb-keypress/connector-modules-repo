@@ -11,7 +11,7 @@ class TestWooCustomerSync(WooConnectorCommon):
 
     def test_import_same_email_different_instance_reuses_partner(self):
         """The same email across stores reuses one contact and adds a binding per store."""
-        other = self.env['kits.connector.instance'].create({
+        other = self.env['kits.woo.instance'].create({
             'name': 'Woo Store B',
             'platform_type': 'woocommerce',
             'company_id': self.company.id,
@@ -180,9 +180,9 @@ class TestWooCustomerSync(WooConnectorCommon):
             'email': 'linked@example.com',
             'company_id': self.company.id,
         })
-        self.assertFalse(partner.kits_connected_instance_ids)
+        self.assertFalse(partner.kits_connected_instance_names)
         self.instance._woo_bind('res.partner', partner.id, '12')
         partner.invalidate_recordset()
-        self.assertIn(self.instance, partner.kits_connected_instance_ids)
+        self.assertIn(self.instance.display_name, partner.kits_connected_instance_names or '')
         self.assertEqual(partner.kits_binding_count, 1)
         self.assertEqual(partner.woo_sync_state, 'synced')

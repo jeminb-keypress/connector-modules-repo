@@ -8,7 +8,7 @@ class KitsWooSyncWizard(models.TransientModel):
     _description = 'WooCommerce Specific Sync Operation'
 
     instance_id = fields.Many2one(
-        'kits.connector.instance',
+        'kits.woo.instance',
         string='WooCommerce Store',
         required=True,
         domain="[('platform_type', '=', 'woocommerce'), ('active', '=', True)]",
@@ -74,7 +74,7 @@ class KitsWooSyncWizard(models.TransientModel):
         values = super().default_get(fields_list)
         if 'company_id' in fields_list and not values.get('company_id'):
             values['company_id'] = self.env.company.id
-        instance = self.env['kits.connector.instance'].browse(values.get('instance_id'))
+        instance = self.env['kits.woo.instance'].browse(values.get('instance_id'))
         if instance.company_id and 'company_id' in fields_list:
             values['company_id'] = instance.company_id.id
         return values
@@ -116,7 +116,7 @@ class KitsWooSyncWizard(models.TransientModel):
 
         job_type, name, payload = self._prepare_job()
         existing = self.env['kits.connector.sync.job'].search([
-            ('instance_id', '=', instance.id),
+            ('instance_id', '=', instance._kits_instance_ref()),
             ('job_type', '=', job_type),
             ('state', 'in', ('pending', 'running')),
         ], limit=20)
@@ -130,7 +130,7 @@ class KitsWooSyncWizard(models.TransientModel):
         return instance._woo_open_jobs(job, self.env._('Queued %(name)s.', name=name))
 
     def _parse_ids(self, raw):
-        return self.env['kits.connector.instance']._woo_parse_id_list(raw)
+        return self.env['kits.woo.instance']._woo_parse_id_list(raw)
 
     def _prepare_job(self):
         self.ensure_one()

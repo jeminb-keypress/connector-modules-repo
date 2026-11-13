@@ -1,26 +1,27 @@
 # -*- coding: utf-8 -*-
 {
     'name': 'Kits Odoo Base Connector',
-    'version': '20.0.1.9.1',
+    'version': '20.0.1.10.1',
     'category': 'Productivity',
-    'summary': 'Reusable integration framework for marketplace and ERP connectors',
+    'summary': 'Common Connector Library for marketplace and ERP integrations',
     'description': """
-Kits Odoo Base Connector
-========================
+Kits Odoo Base Connector — Common Connector Library
+===================================================
 
-Shared infrastructure for platform connectors (WooCommerce, Shopify, Magento,
-Amazon, QuickBooks, and others).
+Platform-independent reusable infrastructure for store connectors
+(WooCommerce, Shopify, and future platforms).
 
 Provides:
-* Connector instance / connection management
-* Reusable HTTP API utilities with authentication hooks
+* Abstract instance mixin (no concrete store/instance model)
+* Reusable HTTP API client, exceptions, and auth hooks
 * Background sync jobs with retries and scheduled processing
-* Operation logging
-* External ID mapping (bindings)
+* Operation logging with generic instance references
+* External ID bindings with generic instance references
+* Waiting-list, contact, order, product, stock, and dashboard helpers
 * Company-isolated security
 
-Platform-specific business logic belongs in dependent modules such as
-``kits_odoo_woocommerce_connector``.
+Platform modules own their concrete instance models, credentials,
+connection UI, and platform-specific business logic.
     """,
     'author': 'Kits',
     'website': '',
@@ -33,12 +34,11 @@ Platform-specific business logic belongs in dependent modules such as
         'security/kits_connector_security.xml',
         'security/ir.access.csv',
         'data/ir_cron_data.xml',
-        'views/kits_connector_instance_views.xml',
         'views/kits_connector_sync_job_views.xml',
         'views/kits_connector_log_views.xml',
         'views/kits_connector_binding_views.xml',
     ],
     'installable': True,
-    'application': False,
+    'application': True,
     'auto_install': False,
 }

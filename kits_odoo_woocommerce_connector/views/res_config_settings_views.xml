@@ -1,0 +1,129 @@
+<?xml version="1.0" encoding="utf-8"?>
+<odoo>
+    <record id="res_config_settings_view_form" model="ir.ui.view">
+        <field name="name">res.config.settings.view.form.inherit.kits.woo</field>
+        <field name="model">res.config.settings</field>
+        <field name="priority" eval="90"/>
+        <field name="inherit_id" ref="base.res_config_settings_view_form"/>
+        <field name="arch" type="xml">
+            <xpath expr="//form" position="inside">
+                <app string="WooCommerce"
+                     data-string="WooCommerce"
+                     name="kits_odoo_woocommerce_connector"
+                     groups="kits_odoo_base_connector.group_kits_connector_manager">
+
+                    <block title="WooCommerce Instance" name="woo_instance_setting_container">
+                        <setting id="woo_instance_selection"
+                                 string="Select Instance"
+                                 help="Choose which WooCommerce store to configure. Settings below apply only to the selected store.">
+                            <div class="content-group">
+                                <div class="row mt16 align-items-center">
+                                    <div class="col-lg-6">
+                                        <field name="woo_instance_id"
+                                               options="{'no_create': True, 'no_open': True}"
+                                               placeholder="Select Instance"
+                                               class="o_light_label"/>
+                                    </div>
+                                    <div class="col-lg-6">
+                                        <button name="action_woo_create_instance"
+                                                type="object"
+                                                string="Create More Instance"
+                                                class="btn-link"
+                                                icon="east"/>
+                                    </div>
+                                </div>
+                            </div>
+                        </setting>
+                    </block>
+
+                    <div class="alert alert-info mt16 mb0" role="status"
+                         invisible="woo_instance_id">
+                        No WooCommerce instance selected. Select an existing store
+                        above, or use Create More Instance, to manage webhook
+                        configuration.
+                    </div>
+
+                    <div invisible="not woo_instance_id">
+                        <block title="Webhook Delivery"
+                               name="woo_webhook_delivery_setting_container">
+                            <setting id="woo_public_webhook_url"
+                                     string="Public Webhook URL"
+                                     help="Optional externally reachable Odoo origin for WooCommerce webhook deliveries. Leave empty to use get_base_url().">
+                                <div class="content-group">
+                                    <div class="row mt16">
+                                        <field name="public_webhook_url"
+                                               placeholder="https://odoo.example.com"
+                                               class="o_light_label"/>
+                                    </div>
+                                    <div class="row mt8 text-muted">
+                                        <label for="effective_webhook_base_url"
+                                               string="Effective URL"
+                                               class="col-lg-3 o_light_label"/>
+                                        <field name="effective_webhook_base_url"
+                                               nolabel="1"
+                                               readonly="1"
+                                               class="col-lg-9"/>
+                                    </div>
+                                    <div class="alert alert-warning mt8 mb0"
+                                         role="alert"
+                                         invisible="not public_webhook_url_warning">
+                                        <field name="public_webhook_url_warning"
+                                               nolabel="1"
+                                               readonly="1"/>
+                                    </div>
+                                    <div class="mt16">
+                                        <button name="action_woo_rebuild_webhook_delivery_urls"
+                                                type="object"
+                                                string="Rebuild Webhook Delivery URLs"
+                                                class="btn-secondary"
+                                                confirm="Update delivery URLs on existing remote WooCommerce webhooks for this store? Remote IDs and secrets are preserved. Unchanged URLs are skipped."/>
+                                    </div>
+                                </div>
+                            </setting>
+                        </block>
+
+                        <block title="Webhook Configuration"
+                               name="woo_webhook_setting_container">
+                            <div class="text-muted mb-3 col-12">
+                                Enable or pause WooCommerce webhooks per resource for
+                                the selected store. An enabled switch does not prove
+                                every remote webhook is active — WooCommerce may disable
+                                a webhook after consecutive failed deliveries. Use the
+                                store's Webhooks tab for refresh, activate, stop, and
+                                delete. Product webhooks never overwrite Odoo stock.
+                            </div>
+                            <setting id="woo_webhook_product"
+                                     string="Manage Products via WooCommerce webhooks"
+                                     help="Register or pause product create, update, and delete webhooks. Product webhooks never overwrite Odoo stock.">
+                                <field name="woo_webhook_product_enabled"/>
+                            </setting>
+                            <setting id="woo_webhook_customer"
+                                     string="Manage Customers via WooCommerce webhooks"
+                                     help="Register or pause customer create, update, and delete webhooks.">
+                                <field name="woo_webhook_customer_enabled"/>
+                            </setting>
+                            <setting id="woo_webhook_order"
+                                     string="Manage Orders via WooCommerce webhooks"
+                                     help="Register or pause order create, update, and delete webhooks.">
+                                <field name="woo_webhook_order_enabled"/>
+                            </setting>
+                            <setting id="woo_webhook_coupon"
+                                     string="Manage Coupons via WooCommerce webhooks"
+                                     help="Register or pause coupon create, update, and delete webhooks.">
+                                <field name="woo_webhook_coupon_enabled"/>
+                            </setting>
+                        </block>
+                    </div>
+                </app>
+            </xpath>
+        </field>
+    </record>
+
+    <record id="kits_woo_action_config_settings" model="ir.actions.act_window">
+        <field name="name">WooCommerce Settings</field>
+        <field name="res_model">res.config.settings</field>
+        <field name="view_mode">form</field>
+        <field name="target">current</field>
+        <field name="context">{'module': 'kits_odoo_woocommerce_connector'}</field>
+    </record>
+</odoo>

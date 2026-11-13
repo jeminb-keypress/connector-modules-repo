@@ -33,7 +33,7 @@ _FAILED_STATE = 'failed'
 
 
 class KitsConnectorInstanceDashboard(models.Model):
-    _inherit = 'kits.connector.instance'
+    _inherit = 'kits.woo.instance'
 
     @api.model
     def get_woo_dashboard_data(self, date_range='last_30', date_from=False, date_to=False):
@@ -308,9 +308,13 @@ class KitsConnectorInstanceDashboard(models.Model):
 
     @api.model
     def _woo_dashboard_job_domain(self, store_ids):
+        refs = [
+            f'kits.woo.instance,{store_id}'
+            for store_id in store_ids
+        ]
         return [
             ('platform_type', '=', 'woocommerce'),
-            ('instance_id', 'in', store_ids),
+            ('instance_id', 'in', refs),
         ]
 
     @api.model
@@ -402,19 +406,20 @@ class KitsConnectorInstanceDashboard(models.Model):
                 store.write_date,
             ]
             last_sync = max((d for d in last_candidates if d), default=False)
+            store_ref = store._kits_instance_ref()
             done = Job.search_count([
-                ('instance_id', '=', store.id),
+                ('instance_id', '=', store_ref),
                 ('state', '=', _DONE_STATE),
                 ('finished_at', '>=', start),
                 ('finished_at', '<=', end),
             ])
             failed = Job.search_count([
-                ('instance_id', '=', store.id),
+                ('instance_id', '=', store_ref),
                 ('state', '=', _FAILED_STATE),
                 ('finished_at', '>=', start),
                 ('finished_at', '<=', end),
             ]) + Job.search_count([
-                ('instance_id', '=', store.id),
+                ('instance_id', '=', store_ref),
                 ('state', '=', _FAILED_STATE),
                 ('finished_at', '=', False),
                 ('write_date', '>=', start),

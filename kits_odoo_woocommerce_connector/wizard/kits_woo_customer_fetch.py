@@ -10,7 +10,7 @@ class KitsWooCustomerFetch(models.TransientModel):
     _description = 'Fetch Customer from WooCommerce'
 
     instance_id = fields.Many2one(
-        'kits.connector.instance',
+        'kits.woo.instance',
         string='WooCommerce Store',
         required=True,
         domain="[('platform_type', '=', 'woocommerce'), ('active', '=', True)]",
@@ -43,7 +43,7 @@ class KitsWooCustomerFetch(models.TransientModel):
         values = super().default_get(fields_list)
         if 'company_id' in fields_list and not values.get('company_id'):
             values['company_id'] = self.env.company.id
-        instance = self.env['kits.connector.instance'].browse(values.get('instance_id'))
+        instance = self.env['kits.woo.instance'].browse(values.get('instance_id'))
         if instance.company_id and 'company_id' in fields_list:
             values['company_id'] = instance.company_id.id
         return values

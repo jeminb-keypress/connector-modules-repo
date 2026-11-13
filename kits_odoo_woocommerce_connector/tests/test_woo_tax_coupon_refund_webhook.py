@@ -171,7 +171,7 @@ class TestWooTaxMapping(WooConnectorCommon):
     def test_multi_instance_tax_isolation(self):
         tax_a = self._sale_tax(10, 'Store A Tax')
         tax_b = self._sale_tax(5, 'Store B Tax')
-        other = self.env['kits.connector.instance'].create({
+        other = self.env['kits.woo.instance'].create({
             'name': 'Tax Store B',
             'platform_type': 'woocommerce',
             'company_id': self.company.id,
@@ -224,7 +224,7 @@ class TestWooCouponRestrictions(WooConnectorCommon):
         self.instance._woo_bind('product.product', product.id, 44)
         self.instance._woo_bind('product.template', tmpl.id, 44)
 
-        other = self.env['kits.connector.instance'].create({
+        other = self.env['kits.woo.instance'].create({
             'name': 'Coupon Store B',
             'platform_type': 'woocommerce',
             'company_id': self.company.id,
@@ -440,7 +440,7 @@ class TestWooWebhookDbAllowlist(HttpCase):
         warehouse = self.env['stock.warehouse'].search(
             [('company_id', '=', self.env.company.id)], limit=1,
         )
-        self.instance = self.env['kits.connector.instance'].create({
+        self.instance = self.env['kits.woo.instance'].create({
             'name': 'Allowlist Woo Store',
             'platform_type': 'woocommerce',
             'company_id': self.env.company.id,
@@ -451,6 +451,25 @@ class TestWooWebhookDbAllowlist(HttpCase):
             'state': 'connected',
             'woo_webhook_public_base_url': 'http://127.0.0.1',
             'woo_webhook_secret': 'http-secret',
+        })
+        Webhook = self.env['kits.woo.webhook']
+        self.product_webhook = Webhook.create({
+            'name': 'Product Updated',
+            'instance_id': self.instance.id,
+            'topic': 'product.updated',
+            'webhook_id': '901',
+            'delivery_url': f'{self.instance.woo_webhook_resource_base_url}/products',
+            'secret': 'http-secret',
+            'status': 'active',
+        })
+        self.order_webhook = Webhook.create({
+            'name': 'Order Updated',
+            'instance_id': self.instance.id,
+            'topic': 'order.updated',
+            'webhook_id': '902',
+            'delivery_url': f'{self.instance.woo_webhook_resource_base_url}/orders',
+            'secret': 'http-secret',
+            'status': 'active',
         })
 
     def _sign(self, body: bytes, secret: str = 'http-secret') -> str:
@@ -477,6 +496,8 @@ class TestWooWebhookDbAllowlist(HttpCase):
                 'Content-Type': 'application/json',
                 'X-WC-Webhook-Signature': self._sign(body),
                 'X-WC-Webhook-Topic': 'product.updated',
+                'X-WC-Webhook-ID': '901',
+                'X-WC-Webhook-Source': 'https://woo.allow.test',
                 'X-WC-Webhook-Delivery-ID': 'allowlist-1',
             },
         )
@@ -502,6 +523,8 @@ class TestWooWebhookDbAllowlist(HttpCase):
                 'Content-Type': 'application/json',
                 'X-WC-Webhook-Signature': self._sign(body),
                 'X-WC-Webhook-Topic': 'product.updated',
+                'X-WC-Webhook-ID': '901',
+                'X-WC-Webhook-Source': 'https://woo.allow.test',
                 'X-WC-Webhook-Delivery-ID': 'allowlist-ok',
             },
         )
@@ -519,6 +542,8 @@ class TestWooWebhookDbAllowlist(HttpCase):
                 'Content-Type': 'application/json',
                 'X-WC-Webhook-Signature': 'not-valid',
                 'X-WC-Webhook-Topic': 'order.updated',
+                'X-WC-Webhook-ID': '902',
+                'X-WC-Webhook-Source': 'https://woo.allow.test',
             },
         )
         self.assertEqual(response.status_code, 401)

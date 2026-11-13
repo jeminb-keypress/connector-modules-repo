@@ -24,7 +24,7 @@ class ProductTemplate(models.Model):
     _inherit = 'product.template'
 
     woo_instance_ids = fields.Many2many(
-        'kits.connector.instance',
+        'kits.woo.instance',
         'product_template_woo_instance_rel',
         'product_tmpl_id',
         'instance_id',
@@ -153,7 +153,7 @@ class ProductTemplate(models.Model):
         return super().unlink()
 
     def _woo_get_instances_for_company(self):
-        return self.env['kits.connector.instance'].search([
+        return self.env['kits.woo.instance'].search([
             ('platform_type', '=', 'woocommerce'),
             ('active', '=', True),
             ('company_id', 'in', [False, self.env.company.id]),
@@ -390,6 +390,6 @@ class ProductTemplate(models.Model):
         if lines:
             summary = summary + '\n' + '\n'.join(lines[:12])
         notify_type = 'success' if done and not failed else ('warning' if done else 'danger')
-        return self.env['kits.connector.instance']._woo_notify(
+        return self.env['kits.woo.instance']._woo_notify(
             summary, notify_type=notify_type, sticky=bool(failed),
         )

@@ -15,7 +15,7 @@ _WOO_INACTIVE_STATUSES = frozenset({'draft', 'pending', 'private', 'trash'})
 
 
 class KitsConnectorInstanceProduct(models.Model):
-    _inherit = 'kits.connector.instance'
+    _inherit = 'kits.woo.instance'
 
     # =========================================================================
     # Product import

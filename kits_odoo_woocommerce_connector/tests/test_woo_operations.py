@@ -357,7 +357,7 @@ class TestWooOperations(WooConnectorCommon):
         first = wizard.action_execute()
         second = wizard.action_execute()
         jobs = self.env['kits.connector.sync.job'].search([
-            ('instance_id', '=', self.instance.id),
+            ('instance_id', '=', self.instance._kits_instance_ref()),
             ('job_type', '=', 'woo_import_customers'),
             ('state', 'in', ('pending', 'running')),
         ])
@@ -385,7 +385,7 @@ class TestWooOperations(WooConnectorCommon):
         self.assertTrue(caught)
         self.assertEqual(order.state, 'draft')
         log = self.env['kits.connector.log'].sudo().search([
-            ('instance_id', '=', self.instance.id),
+            ('instance_id', '=', self.instance._kits_instance_ref()),
             ('name', '=', 'woo_cancel_order'),
             ('status', '=', 'failure'),
         ], limit=1)

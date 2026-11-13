@@ -12,7 +12,7 @@ class KitsWooRefund(models.Model):
 
     name = fields.Char(compute='_compute_name', store=True)
     instance_id = fields.Many2one(
-        'kits.connector.instance',
+        'kits.woo.instance',
         required=True,
         ondelete='cascade',
         index=True,

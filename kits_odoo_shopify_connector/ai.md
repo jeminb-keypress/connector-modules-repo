@@ -8,9 +8,9 @@
 
 Odoo 20 Shopify connector. Sibling of `kits_odoo_woocommerce_connector` under `custome/20.0/`. Does not depend on WooCommerce and does not change the base module.
 
-Phase 1 is connection setup only: shop domain, Admin API access token, API version, GraphQL client, and Test Connection.
+**Current version:** `20.0.1.2.0`. Phase 1 is connection setup only: shop domain, Admin API access token, API version, GraphQL client, and Test Connection.
 
-Depends on `kits_odoo_base_connector` for instances, the HTTP client, logs, company rules, and connector groups.
+Owns concrete **`kits.shopify.instance`**. Depends on `kits_odoo_base_connector` `20.0.1.10.0` for the abstract instance mixin, HTTP client, logs, jobs, bindings, and connector groups.
 
 ---
 
@@ -19,7 +19,7 @@ Depends on `kits_odoo_base_connector` for instances, the HTTP client, logs, comp
 ```
 kits_odoo_shopify_connector
     │
-    ├─ extends kits.connector.instance
+    ├─ extends kits.shopify.instance
     │     platform_type shopify, domain, token, API version
     │     _kits_get_base_url / _kits_get_auth_headers / _kits_test_connection
     └─ services/shopify_api.py
@@ -34,13 +34,13 @@ Business sync is not implemented. Do not add product, image, customer, order, in
 
 ### Reuse
 
-- `selection_add` on the base list selection `platform_type`.
+- `_inherit = ['kits.connector.instance.mixin']` with `platform_type='shopify'`.
 - `ConnectorHttpClient` via `_kits_http_request_json`.
-- `action_test_connection` (base) updates `state`, `last_error`, and `kits.connector.log`.
+- `action_test_connection` (mixin) updates `state`, `last_error`, and `kits.connector.log`.
 - Credential group `kits_odoo_base_connector.group_kits_connector_manager` and `widget="password"`.
-- Multi-company rules on the base instance. No new model, so no extra ACL file.
+- Own ACL (`security/ir.access.csv`) and primary store views (not Base connection UI).
 
-Shopify-only behavior stays in this module: GraphQL `errors` on HTTP 200, cost throttling, `X-Shopify-Access-Token`, and myshopify.com domain checks.
+Shopify-only behavior stays in this module: GraphQL `errors` on HTTP 200, cost throttling, `X-Shopify-Access-Token`, and myshopify.com domain checks. No new sync features in this restructure.
 
 ---
 
@@ -131,6 +131,18 @@ The first install command used `--test-enable` without a tag, so Odoo also ran u
 ---
 
 ## 8. Change log
+
+### 2026-11-12 — Own `kits.shopify.instance` (`20.0.1.2.0`)
+
+**Created / redesigned**
+
+- Concrete `kits.shopify.instance` inheriting the Base instance mixin.
+- Primary Shopify store views + `security/ir.access.csv`.
+- `migrations/20.0.1.2.0/end-migrate.py` — migrate Shopify rows from legacy shared instance table.
+
+**Validation**
+
+- Fresh install Base+Shopify on `odoo20-connectors-shopify-tests`: **0 failed, 0 error(s) of 11 tests**.
 
 ### 2026-10-29 — Phase 1 connection module
 

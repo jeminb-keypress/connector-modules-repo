@@ -211,7 +211,7 @@ class TestWooCustomerWaiting(WooConnectorCommon):
             )
         Waiting._maybe_trigger_batch(self.instance)
         job = self.env['kits.connector.sync.job'].search([
-            ('instance_id', '=', self.instance.id),
+            ('instance_id', '=', self.instance._kits_instance_ref()),
             ('job_type', '=', 'woo_process_customer_waiting'),
             ('state', 'in', ('pending', 'running', 'draft')),
         ], limit=1)
@@ -425,7 +425,8 @@ class TestWooCustomerWaiting(WooConnectorCommon):
             1,
         )
 
-    def test_order_update_customer_setting_on_and_off(self):
+    def test_order_import_customer_only_when_missing(self):
+        """New order imports the customer once; re-import never updates/duplicates it."""
         product = self.env['product.product'].create({
             'name': 'Cust Update Prod',
             'default_code': 'CUPD-1',
@@ -473,7 +474,6 @@ class TestWooCustomerWaiting(WooConnectorCommon):
                 'name': 'Cust Update Prod',
             }],
         }
-        self.instance.woo_update_customer_on_order_import = False
         with self._patch_api(api):
             result, _ = self.instance._woo_import_one_order(woo_order)
         self.assertEqual(result, 'created')
@@ -481,7 +481,16 @@ class TestWooCustomerWaiting(WooConnectorCommon):
         partner = order.partner_id
         original_name = partner.name
         original_invoice = order.partner_invoice_id
-        # OFF: re-import with new addresses must not refresh children/partner fields.
+        original_invoice_streets = partner.child_ids.filtered(
+            lambda c: c.type == 'invoice'
+        ).mapped('street')
+        partner_count = self.env['res.partner'].search_count([
+            ('email', '=ilike', 'updsetting@example.com'),
+            ('parent_id', '=', False),
+        ])
+        self.assertEqual(partner_count, 1)
+        # Re-import with changed addresses must not refresh partner/children
+        # and must not create a duplicate contact.
         woo_order['billing'] = dict(woo_order['billing'], address_1='New Bill St', city='NewCity')
         woo_order['shipping'] = dict(woo_order['shipping'], address_1='New Ship Rd', city='NewPort')
         customer['billing'] = woo_order['billing']
@@ -493,21 +502,24 @@ class TestWooCustomerWaiting(WooConnectorCommon):
         partner.invalidate_recordset()
         self.assertEqual(partner.name, original_name)
         self.assertEqual(order.partner_invoice_id, original_invoice)
-        self.assertEqual(original_invoice.street, 'Old Bill St')
-        # ON: refresh may add missing address children; never overwrite name/email/phone.
-        self.instance.woo_update_customer_on_order_import = True
-        with self._patch_api(api):
-            result, _ = self.instance._woo_import_one_order(woo_order)
-        self.assertEqual(result, 'skipped')
-        order.invalidate_recordset()
-        partner.invalidate_recordset()
-        self.assertEqual(partner.name, original_name)
-        self.assertEqual(partner.email, 'updsetting@example.com')
         invoice_streets = partner.child_ids.filtered(
             lambda c: c.type == 'invoice'
         ).mapped('street')
-        self.assertIn('New Bill St', invoice_streets)
-        self.assertIn('Old Bill St', invoice_streets)
+        self.assertEqual(invoice_streets, original_invoice_streets)
+        self.assertNotIn('New Bill St', invoice_streets)
+        self.assertEqual(
+            self.env['res.partner'].search_count([
+                ('email', '=ilike', 'updsetting@example.com'),
+                ('parent_id', '=', False),
+            ]),
+            1,
+        )
+        # Existing binding: partner resolution must not call get_customer again.
+        api.get_customer.reset_mock()
+        with self._patch_api(api):
+            resolved = self.instance._woo_partner_from_order(woo_order)
+        self.assertEqual(resolved, partner)
+        api.get_customer.assert_not_called()
 
     def test_older_webhook_event_ignored(self):
         payload_new = self._customer(
