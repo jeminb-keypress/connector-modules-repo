@@ -181,8 +181,10 @@ class TestWooCustomerSync(WooConnectorCommon):
             'company_id': self.company.id,
         })
         self.assertFalse(partner.kits_connected_instance_names)
+        self.assertFalse(partner.woo_instance_ids)
         self.instance._woo_bind('res.partner', partner.id, '12')
         partner.invalidate_recordset()
         self.assertIn(self.instance.display_name, partner.kits_connected_instance_names or '')
+        self.assertEqual(partner.woo_instance_ids, self.instance)
         self.assertEqual(partner.kits_binding_count, 1)
         self.assertEqual(partner.woo_sync_state, 'synced')

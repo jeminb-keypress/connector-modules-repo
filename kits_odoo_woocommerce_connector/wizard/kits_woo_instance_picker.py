@@ -30,25 +30,11 @@ class KitsWooInstancePicker(models.TransientModel):
         'product.template',
         string='Products',
     )
-    partner_ids = fields.Many2many(
-        'res.partner',
-        string='Customers',
-    )
 
     def action_confirm(self):
         self.ensure_one()
-        if self.partner_ids:
-            partners = self.partner_ids.filtered(lambda p: not p.parent_id)
-            if not partners:
-                raise UserError(self.env._('Select at least one top-level customer.'))
-            if self.operation == 'export':
-                raise UserError(self.env._(
-                    'WooCommerce customer export is not supported. '
-                    'Use Update from WooCommerce or Fetch Customer.'
-                ))
-            return partners._woo_enqueue_import(self.instance_id)
         if not self.template_ids:
-            raise UserError(self.env._('Select at least one product or customer.'))
+            raise UserError(self.env._('Select at least one product.'))
         if self.operation == 'export':
             return self.template_ids._woo_enqueue_export(self.instance_id)
         return self.template_ids._woo_enqueue_import(self.instance_id)

@@ -51,6 +51,25 @@ class KitsConnectorSyncJob(models.Model):
             self.instance_id, job=self,
         )
 
+    def _run_woo_process_product_waiting(self):
+        self.ensure_one()
+        self._woo_ensure_instance()
+        return self.env['kits.woo.product.waiting']._process_pending_for_instance(
+            self.instance_id, job=self,
+        )
+
+    def _run_woo_process_product_images(self):
+        self.ensure_one()
+        self._woo_ensure_instance()
+        return self.env['kits.woo.product.waiting']._process_images_for_instance(
+            self.instance_id, job=self,
+        )
+
+    def _run_woo_auto_import_products(self):
+        self.ensure_one()
+        self._woo_ensure_instance()
+        return self.instance_id._woo_auto_import_products(job=self)
+
     def _run_woo_import_categories(self):
         self.ensure_one()
         self._woo_ensure_instance()
@@ -75,6 +94,11 @@ class KitsConnectorSyncJob(models.Model):
         self.ensure_one()
         self._woo_ensure_instance()
         return self.instance_id._woo_import_coupons(job=self)
+
+    def _run_woo_process_coupon_waiting(self):
+        self.ensure_one()
+        self._woo_ensure_instance()
+        return self.instance_id._woo_process_coupon_waiting(job=self)
 
     def _run_woo_export_coupons(self):
         self.ensure_one()

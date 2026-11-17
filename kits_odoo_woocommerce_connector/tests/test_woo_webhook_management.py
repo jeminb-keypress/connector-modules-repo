@@ -326,21 +326,26 @@ class TestWooWebhookManagement(WooConnectorCommon):
             'stock_quantity': 999,
             'stock_status': 'instock',
         }
-        with patch.object(
-            type(self.instance), '_woo_import_one_product', return_value='created',
-        ) as import_mock:
-            job = self.env['kits.connector.sync.job'].create({
-                'name': 'product webhook',
-                'instance_id': self.instance.id,
-                'job_type': 'woo_webhook_product',
-                'payload': {
-                    'topic': 'product.updated',
-                    'woo_id': 9001,
-                    'product': product_payload,
-                },
-            })
+        job = self.env['kits.connector.sync.job'].create({
+            'name': 'product webhook',
+            'instance_id': self.instance.id,
+            'job_type': 'woo_webhook_product',
+            'payload': {
+                'topic': 'product.updated',
+                'woo_id': 9001,
+                'product': product_payload,
+            },
+        })
+        api = MagicMock()
+        api.get_variations.return_value = iter([])
+        with self._patch_api(api):
             self.instance._woo_process_product_webhook(job=job)
-        sent = import_mock.call_args.args[0]
+        row = self.env['kits.woo.product.waiting'].search([
+            ('instance_id', '=', self.instance.id),
+            ('external_id', '=', '9001'),
+        ], limit=1)
+        self.assertTrue(row)
+        sent = row.payload or {}
         self.assertNotIn('stock_quantity', sent)
         self.assertNotIn('stock_status', sent)
         self.assertNotIn('manage_stock', sent)

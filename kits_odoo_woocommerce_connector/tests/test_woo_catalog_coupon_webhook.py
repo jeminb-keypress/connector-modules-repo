@@ -17,20 +17,23 @@ class TestWooCatalogAndCoupon(WooConnectorCommon):
 
     def test_category_hierarchy_import_parents_first(self):
         api = MagicMock()
-        api.get_categories.return_value = iter([
-            {'id': 2, 'name': 'Child', 'parent': 1, 'slug': 'child'},
-            {'id': 1, 'name': 'Parent', 'parent': 0, 'slug': 'parent'},
-        ])
         with self._patch_api(api):
+            api.get_categories.side_effect = None
+            api.get_categories.return_value = iter([
+                {'id': 2, 'name': 'Child', 'parent': 1, 'slug': 'child'},
+                {'id': 1, 'name': 'Parent', 'parent': 0, 'slug': 'parent'},
+            ])
             summary = self.instance._woo_import_categories()
         self.assertIn('created=2', summary)
-        parent = self.env['kits.connector.binding']._kits_find_binding(
-            self.instance, 'product.category', external_id='1',
-        )._kits_get_odoo_record()
-        child = self.env['kits.connector.binding']._kits_find_binding(
-            self.instance, 'product.category', external_id='2',
-        )._kits_get_odoo_record()
+        parent = self.env['kits.woo.category']._find(self.instance, external_id='1')
+        child = self.env['kits.woo.category']._find(self.instance, external_id='2')
+        self.assertTrue(parent)
         self.assertEqual(child.parent_id, parent)
+        self.assertFalse(
+            self.env['kits.connector.binding']._kits_find_binding(
+                self.instance, 'product.category', external_id='1',
+            )
+        )
 
     def test_category_import_requires_name(self):
         with self.assertRaises(UserError):
@@ -100,7 +103,8 @@ class TestWooCatalogAndCoupon(WooConnectorCommon):
         api.get_coupons.side_effect = lambda **kw: iter([dict(woo)])
         with self._patch_api(api):
             summary = self.instance._woo_import_coupons()
-        self.assertIn('created=1', summary)
+        self.assertIn('queued=1', summary)
+        self.assertIn('processed_done=1', summary)
         coupon = self.env['kits.woo.coupon'].search([
             ('instance_id', '=', self.instance.id),
             ('code', '=', 'SAVE10'),
@@ -108,7 +112,7 @@ class TestWooCatalogAndCoupon(WooConnectorCommon):
         self.assertEqual(len(coupon), 1)
         with self._patch_api(api):
             summary2 = self.instance._woo_import_coupons()
-        self.assertIn('updated=1', summary2)
+        self.assertIn('processed_done=1', summary2)
         self.assertEqual(
             self.env['kits.woo.coupon'].search_count([
                 ('instance_id', '=', self.instance.id),
@@ -239,7 +243,7 @@ class TestWooCatalogAndCoupon(WooConnectorCommon):
             'payload': {'topic': 'coupon.deleted', 'woo_id': 88, 'coupon': {'id': 88}},
             'state': 'pending',
         }))
-        self.assertIn('deleted remote', summary.lower())
+        self.assertIn('processed delete', summary.lower())
         self.assertTrue(coupon.exists())
 
     def test_wizard_blocks_inventory_import_and_supports_coupons(self):
@@ -281,6 +285,165 @@ class TestWooCatalogAndCoupon(WooConnectorCommon):
         coupons = self.env['kits.woo.coupon'].search([('code', '=', 'SAME')])
         self.assertEqual(len(coupons), 2)
         self.assertNotEqual(coupons[0].instance_id, coupons[1].instance_id)
+
+    def test_multi_instance_attribute_term_bindings_isolated(self):
+        other = self.env['kits.woo.instance'].create({
+            'name': 'Other Attr Store',
+            'platform_type': 'woocommerce',
+            'company_id': self.company.id,
+            'base_url': 'https://other-attr.test',
+            'woo_consumer_key': 'ck',
+            'woo_consumer_secret': 'cs',
+            'state': 'connected',
+        })
+        api_a = MagicMock()
+        api_a.get_attributes.return_value = iter([
+            {'id': 11, 'name': 'Color', 'slug': 'color'},
+        ])
+        api_a.get_attribute_terms.return_value = iter([
+            {'id': 21, 'name': 'Red'},
+        ])
+        with self._patch_api(api_a):
+            self.instance._woo_import_attributes()
+        api_b = MagicMock()
+        api_b.get_attributes.return_value = iter([
+            {'id': 11, 'name': 'Color', 'slug': 'color'},
+        ])
+        api_b.get_attribute_terms.return_value = iter([
+            {'id': 21, 'name': 'Red'},
+        ])
+        with patch.object(type(other), '_woo_api', return_value=api_b):
+            other._woo_import_attributes()
+        Binding = self.env['kits.connector.binding']
+        self.assertEqual(
+            Binding.search_count([
+                ('instance_id', '=', self.instance._kits_instance_ref()),
+                ('odoo_model', '=', 'product.attribute.value'),
+                ('external_id', '=', '11:21'),
+            ]),
+            1,
+        )
+        self.assertEqual(
+            Binding.search_count([
+                ('instance_id', '=', other._kits_instance_ref()),
+                ('odoo_model', '=', 'product.attribute.value'),
+                ('external_id', '=', '11:21'),
+            ]),
+            1,
+        )
+        # Shared Odoo attribute value is fine; bindings stay store-scoped.
+        self.assertEqual(
+            Binding.search_count([
+                ('odoo_model', '=', 'product.attribute.value'),
+                ('external_id', '=', '11:21'),
+            ]),
+            2,
+        )
+
+    def test_attribute_term_failure_logged_without_aborting_attribute(self):
+        api = MagicMock()
+        api.get_attributes.return_value = iter([
+            {'id': 31, 'name': 'Size', 'slug': 'size'},
+        ])
+
+        def _terms(*_a, **_kw):
+            yield {'id': 41, 'name': 'S'}
+            yield {'id': 42, 'name': ''}  # skipped (no name)
+            yield {'id': 43, 'name': 'L'}
+
+        api.get_attribute_terms.side_effect = _terms
+        with self._patch_api(api):
+            summary = self.instance._woo_import_attributes()
+        self.assertTrue('created=1' in summary or 'updated=1' in summary, summary)
+        Binding = self.env['kits.connector.binding']
+        self.assertTrue(Binding._kits_find_binding(
+            self.instance, 'product.attribute.value', external_id='31:41',
+        ))
+        self.assertTrue(Binding._kits_find_binding(
+            self.instance, 'product.attribute.value', external_id='31:43',
+        ))
+
+    def test_coupon_webhook_create_update_and_stale_skip(self):
+        SyncJob = self.env['kits.connector.sync.job']
+        created = SyncJob.create({
+            'name': 'coup create',
+            'instance_id': self.instance.id,
+            'job_type': 'woo_webhook_coupon',
+            'payload': {
+                'topic': 'coupon.created',
+                'woo_id': 901,
+                'coupon': {
+                    'id': 901,
+                    'code': 'HOOK10',
+                    'discount_type': 'percent',
+                    'amount': '10',
+                    'date_modified': '2026-01-10T12:00:00',
+                    'description': 'Hook ten',
+                },
+            },
+            'state': 'pending',
+        })
+        summary = self.instance._woo_process_coupon_webhook(job=created)
+        self.assertIn('created', summary.lower())
+        coupon = self.env['kits.woo.coupon'].search([
+            ('instance_id', '=', self.instance.id),
+            ('code', '=', 'HOOK10'),
+        ])
+        self.assertEqual(len(coupon), 1)
+        binding = self.env['kits.connector.binding']._kits_find_binding(
+            self.instance, 'kits.woo.coupon', external_id='901',
+        )
+        self.assertTrue(binding)
+        self.assertEqual(
+            (binding.external_data or {}).get('date_modified'),
+            '2026-01-10T12:00:00',
+        )
+
+        updated = SyncJob.create({
+            'name': 'coup update',
+            'instance_id': self.instance.id,
+            'job_type': 'woo_webhook_coupon',
+            'payload': {
+                'topic': 'coupon.updated',
+                'woo_id': 901,
+                'coupon': {
+                    'id': 901,
+                    'code': 'HOOK10',
+                    'discount_type': 'percent',
+                    'amount': '15',
+                    'date_modified': '2026-01-11T12:00:00',
+                    'description': 'Hook fifteen',
+                },
+            },
+            'state': 'pending',
+        })
+        summary2 = self.instance._woo_process_coupon_webhook(job=updated)
+        self.assertIn('updated', summary2.lower())
+        coupon.invalidate_recordset()
+        self.assertEqual(coupon.amount, 15.0)
+
+        stale = SyncJob.create({
+            'name': 'coup stale',
+            'instance_id': self.instance.id,
+            'job_type': 'woo_webhook_coupon',
+            'payload': {
+                'topic': 'coupon.updated',
+                'woo_id': 901,
+                'coupon': {
+                    'id': 901,
+                    'code': 'HOOK10',
+                    'discount_type': 'percent',
+                    'amount': '1',
+                    'date_modified': '2026-01-09T12:00:00',
+                    'description': 'Should not apply',
+                },
+            },
+            'state': 'pending',
+        })
+        stale_summary = self.instance._woo_process_coupon_webhook(job=stale)
+        self.assertIn('stale', stale_summary.lower())
+        coupon.invalidate_recordset()
+        self.assertEqual(coupon.amount, 15.0)
 
 
 @tagged('post_install', '-at_install', 'kits_woo')

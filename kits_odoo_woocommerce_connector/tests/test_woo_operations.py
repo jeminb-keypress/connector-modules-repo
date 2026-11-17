@@ -224,8 +224,16 @@ class TestWooOperations(WooConnectorCommon):
         self.assertEqual(linked.product_tmpl_id, template)
 
     def test_category_tag_coupon_modes(self):
-        category = self.env['product.category'].create({'name': 'Ops Category'})
-        tag = self.env['product.tag'].create({'name': 'Ops Tag'})
+        category = self.env['kits.woo.category'].create({
+            'instance_id': self.instance.id,
+            'name': 'Ops Category',
+            'slug': 'ops-category',
+        })
+        tag = self.env['kits.woo.tag'].create({
+            'instance_id': self.instance.id,
+            'name': 'Ops Tag',
+            'slug': 'ops-tag',
+        })
         coupon = self.env['kits.woo.coupon'].create({
             'name': 'Ops Coupon',
             'code': 'OPS-10',
@@ -243,15 +251,21 @@ class TestWooOperations(WooConnectorCommon):
         api.create_coupon.return_value = {'id': 7, 'code': coupon.code}
         api.update_coupon.return_value = {'id': 7, 'code': coupon.code}
         with self._patch_api(api):
+            api.get_tags.side_effect = None
+            api.get_tags.return_value = iter([])
             self.instance._woo_export_categories(job=self._job('woo_export_categories', {
                 'category_mode': 'export', 'category_ids': [category.id],
             }))
+            category.invalidate_recordset()
+            category.write({'name': 'Ops Category Updated'})
             self.instance._woo_export_categories(job=self._job('woo_export_categories', {
                 'category_mode': 'update', 'category_ids': [category.id],
             }))
             self.instance._woo_export_tags(job=self._job('woo_export_tags', {
                 'tag_mode': 'export', 'tag_ids': [tag.id],
             }))
+            tag.invalidate_recordset()
+            tag.write({'name': 'Ops Tag Updated'})
             self.instance._woo_export_tags(job=self._job('woo_export_tags', {
                 'tag_mode': 'update', 'tag_ids': [tag.id],
             }))
@@ -263,6 +277,8 @@ class TestWooOperations(WooConnectorCommon):
         api.update_tag.assert_called()
         api.create_coupon.assert_called_once()
         api.update_coupon.assert_called()
+        self.assertEqual(category.external_id, '5')
+        self.assertEqual(tag.external_id, '6')
 
     def test_shipment_stock_publish_cancel_refund_and_duplicate_job(self):
         template = self.env['product.template'].create({

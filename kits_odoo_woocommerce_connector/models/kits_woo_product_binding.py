@@ -2,13 +2,9 @@
 from odoo import api, fields, models
 from odoo.exceptions import UserError, ValidationError
 
-_PRODUCT_TYPES = [
-    ('simple', 'Simple'),
-    ('variable', 'Variable'),
-    ('grouped', 'Grouped'),
-    ('external', 'External'),
-    ('bundle', 'Bundle'),
-]
+_PRESENTATION_FIELDS = frozenset({
+    'title', 'description', 'description_short',
+})
 
 
 class KitsWooProductBinding(models.Model):
@@ -41,34 +37,56 @@ class KitsWooProductBinding(models.Model):
         ondelete='cascade',
         check_company=True,
     )
+    product_tmpl_name = fields.Char(
+        related='product_tmpl_id.name',
+        string='Odoo Product Name',
+        readonly=True,
+    )
     external_id = fields.Char(
         string='External Product ID',
-        required=True,
         index=True,
+        copy=False,
+        help='Empty until the product is successfully exported or imported from WooCommerce.',
     )
-    title = fields.Char(string='Store Title')
-    description_short = fields.Html(string='Store Short Description', sanitize=True)
-    description = fields.Html(string='Store Description', sanitize=True)
-    product_type = fields.Selection(selection=_PRODUCT_TYPES, string='Product Type', required=True, default='simple')
+    title = fields.Char(
+        string='Store Title',
+        translate=True,
+        help='Store-specific product name sent to WooCommerce. Independent per store.',
+    )
+    description_short = fields.Html(
+        string='Store Short Description',
+        sanitize=True,
+        translate=True,
+    )
+    description = fields.Html(
+        string='Store Description',
+        sanitize=True,
+        translate=True,
+    )
     published = fields.Boolean(string='Published')
-    taxable = fields.Boolean(string='Taxable')
-    virtual = fields.Boolean(string='Virtual')
-    category_ids = fields.Many2many(
-        'product.category',
-        'kits_woo_product_binding_category_rel',
+    woo_category_ids = fields.Many2many(
+        'kits.woo.category',
+        'kits_woo_product_binding_woo_category_rel',
         'binding_id',
-        'category_id',
+        'woo_category_id',
         string='Store Categories',
+        domain="[('instance_id', '=', instance_id), ('active', '=', True), "
+               "('sync_state', 'not in', ('deleted',))]",
+        help='Same-store connector categories. Pending records are exported '
+             'automatically before product export (parents first).',
     )
-    tag_ids = fields.Many2many(
-        'product.tag',
-        'kits_woo_product_binding_tag_rel',
+    woo_tag_ids = fields.Many2many(
+        'kits.woo.tag',
+        'kits_woo_product_binding_woo_tag_rel',
         'binding_id',
-        'tag_id',
+        'woo_tag_id',
         string='Store Tags',
+        domain="[('instance_id', '=', instance_id), ('active', '=', True), "
+               "('sync_state', 'not in', ('deleted',))]",
+        help='Same-store connector tags. Pending records are exported '
+             'automatically before product export.',
     )
     image_urls = fields.Json(string='Store Images')
-    variant_count = fields.Integer(string='Total Variant Count')
     linked_variant_count = fields.Integer(
         string='Linked Variant Count',
         compute='_compute_linked_variant_count',
@@ -78,7 +96,6 @@ class KitsWooProductBinding(models.Model):
         'product_binding_id',
         string='Variant Bindings',
     )
-    store_create_date = fields.Datetime(string='Store Creation Date')
     store_write_date = fields.Datetime(string='Store Modification Date')
     odoo_record_id = fields.Integer(
         string='Odoo Record',
@@ -104,24 +121,117 @@ class KitsWooProductBinding(models.Model):
     @api.depends('title', 'external_id', 'product_tmpl_id')
     def _compute_display_name(self):
         for binding in self:
-            label = binding.title or binding.product_tmpl_id.display_name or binding.external_id
-            binding.display_name = f'{label} ↔ {binding.external_id}'
+            label = binding.title or binding.product_tmpl_id.display_name or binding.external_id or '?'
+            remote = binding.external_id or self.env._('pending')
+            binding.display_name = f'{label} ↔ {remote}'
 
     @api.model_create_multi
     def create(self, vals_list):
+        records = []
         for vals in vals_list:
             if vals.get('instance_id') and not vals.get('company_id'):
                 instance = self.env['kits.woo.instance'].browse(vals['instance_id'])
                 vals['company_id'] = instance.company_id.id
             if vals.get('external_id'):
                 vals['external_id'] = str(vals['external_id'])
-        return super().create(vals_list)
+            elif 'external_id' in vals and not vals['external_id']:
+                vals['external_id'] = False
+            records.append(vals)
+        bindings = super().create(records)
+        bindings._kits_validate_woo_catalog_assignments()
+        return bindings
 
-    @api.constrains('external_id')
+    def write(self, vals):
+        if vals.get('external_id'):
+            vals = dict(vals, external_id=str(vals['external_id']))
+        dirty_presentation = (
+            _PRESENTATION_FIELDS.intersection(vals)
+            and not self.env.context.get('kits_woo_skip_presentation_dirty')
+            and not self.env.context.get('kits_woo_skip_dirty')
+        )
+        result = super().write(vals)
+        if dirty_presentation:
+            self.filtered(
+                lambda b: b.active and b.sync_state not in ('deleted', 'deleted_local')
+            )._kits_mark_not_synced()
+        if any(key in vals for key in (
+            'woo_category_ids', 'woo_tag_ids', 'instance_id',
+        )):
+            self._kits_validate_woo_catalog_assignments()
+            if vals.get('instance_id'):
+                self._kits_clear_cross_store_catalog_assignments()
+        return result
+
+    @api.onchange('instance_id')
+    def _onchange_instance_clear_catalog(self):
+        for binding in self:
+            invalid_cats = binding.woo_category_ids.filtered(
+                lambda c: c.instance_id != binding.instance_id
+            )
+            invalid_tags = binding.woo_tag_ids.filtered(
+                lambda t: t.instance_id != binding.instance_id
+            )
+            if invalid_cats:
+                binding.woo_category_ids = binding.woo_category_ids - invalid_cats
+            if invalid_tags:
+                binding.woo_tag_ids = binding.woo_tag_ids - invalid_tags
+
+    def _kits_clear_cross_store_catalog_assignments(self):
+        for binding in self:
+            valid_cats = binding.woo_category_ids.filtered(
+                lambda c: c.instance_id == binding.instance_id
+            )
+            valid_tags = binding.woo_tag_ids.filtered(
+                lambda t: t.instance_id == binding.instance_id
+            )
+            updates = {}
+            if valid_cats != binding.woo_category_ids:
+                updates['woo_category_ids'] = [(6, 0, valid_cats.ids)]
+            if valid_tags != binding.woo_tag_ids:
+                updates['woo_tag_ids'] = [(6, 0, valid_tags.ids)]
+            if updates:
+                super(KitsWooProductBinding, binding).write(updates)
+
+    def _kits_validate_woo_catalog_assignments(self):
+        """Allow pending same-store cats/tags; reject cross-store and deleted."""
+        for binding in self:
+            for category in binding.woo_category_ids:
+                if category.instance_id != binding.instance_id:
+                    raise ValidationError(self.env._(
+                        'Category "%(name)s" belongs to another WooCommerce store.',
+                        name=category.display_name,
+                    ))
+                if category.sync_state == 'deleted' or not category.active:
+                    raise ValidationError(self.env._(
+                        'Category "%(name)s" is deleted or archived and cannot be '
+                        'assigned to a product.',
+                        name=category.display_name,
+                    ))
+            for tag in binding.woo_tag_ids:
+                if tag.instance_id != binding.instance_id:
+                    raise ValidationError(self.env._(
+                        'Tag "%(name)s" belongs to another WooCommerce store.',
+                        name=tag.display_name,
+                    ))
+                if tag.sync_state == 'deleted' or not tag.active:
+                    raise ValidationError(self.env._(
+                        'Tag "%(name)s" is deleted or archived and cannot be '
+                        'assigned to a product.',
+                        name=tag.display_name,
+                    ))
+
+    @api.constrains('external_id', 'exists_in_store', 'sync_state')
     def _check_external_id(self):
         for binding in self:
-            if not (binding.external_id or '').strip():
-                raise ValidationError(self.env._('External Product ID is required.'))
+            has_remote = bool((binding.external_id or '').strip())
+            if binding.exists_in_store and binding.sync_state != 'deleted' and not has_remote:
+                raise ValidationError(self.env._(
+                    'External Product ID is required for products that exist in the store.'
+                ))
+
+    @api.constrains('woo_category_ids', 'woo_tag_ids', 'instance_id')
+    def _check_woo_catalog_assignments(self):
+        self._kits_validate_woo_catalog_assignments()
 
     @api.model
     def _find(self, instance, *, external_id=False, odoo_record_id=False):
@@ -135,6 +245,10 @@ class KitsWooProductBinding(models.Model):
         else:
             raise UserError(self.env._('Provide an external product id or an Odoo product.'))
         return self.with_context(active_test=False).search(domain, limit=1)
+
+    def _kits_has_remote_id(self):
+        self.ensure_one()
+        return bool((self.external_id or '').strip())
 
     def _kits_get_odoo_record(self):
         self.ensure_one()
@@ -194,7 +308,19 @@ class KitsWooVariantBinding(models.Model):
         index=True,
     )
     sku = fields.Char(string='SKU', index=True)
-    title = fields.Char(string='Store Variant Title')
+    title = fields.Char(
+        string='Store Variant Title',
+        translate=True,
+        help='Store-specific variation label kept on the connector note. '
+             'WooCommerce REST variations do not accept an independent name field; '
+             'export continues to use the parent product name plus attributes.',
+    )
+    attribute_combination = fields.Char(
+        string='Attribute Combination',
+        help='WooCommerce option labels for this variation (e.g. Color: Red, Size: M).',
+    )
+    regular_price = fields.Char(string='Regular Price')
+    sale_price = fields.Char(string='Sale Price')
     product_url = fields.Char(string='Product Page URL')
     manage_stock = fields.Boolean(string='Manage Stock')
     qty_sync_rule = fields.Selection(
@@ -243,6 +369,21 @@ class KitsWooVariantBinding(models.Model):
             if vals.get('external_id'):
                 vals['external_id'] = str(vals['external_id'])
         return super().create(vals_list)
+
+    def write(self, vals):
+        if vals.get('external_id'):
+            vals = dict(vals, external_id=str(vals['external_id']))
+        dirty_title = (
+            'title' in vals
+            and not self.env.context.get('kits_woo_skip_presentation_dirty')
+            and not self.env.context.get('kits_woo_skip_dirty')
+        )
+        result = super().write(vals)
+        if dirty_title:
+            self.filtered(
+                lambda b: b.active and b.sync_state not in ('deleted', 'deleted_local')
+            )._kits_mark_not_synced()
+        return result
 
     @api.constrains('instance_id', 'product_binding_id', 'external_id', 'product_id')
     def _check_parent_store(self):

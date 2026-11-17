@@ -26,12 +26,25 @@ class WooConnectorCommon(TransactionCase):
             'warehouse_id': cls.warehouse.id if cls.warehouse else False,
             'woo_import_images': False,
             'woo_match_by_sku': True,
+            'woo_create_products': True,
             'woo_allow_unmapped_order_lines': False,
             'state': 'connected',
         })
 
     def _patch_api(self, api):
+        self._stub_catalog_api(api)
         return patch.object(type(self.instance), '_woo_api', return_value=api)
+
+    @staticmethod
+    def _stub_catalog_api(api):
+        """Ensure product-import catalog prerequisites iterate empty lists."""
+        if not getattr(api, '_kits_catalog_stubbed', False):
+            api.get_categories.side_effect = lambda **_kw: iter([])
+            api.get_tags.side_effect = lambda **_kw: iter([])
+            api.get_attributes.side_effect = lambda **_kw: iter([])
+            api.get_attribute_terms.side_effect = lambda *_a, **_kw: iter([])
+            api._kits_catalog_stubbed = True
+        return api
 
     @staticmethod
     def _iter_api(records):
@@ -40,4 +53,8 @@ class WooConnectorCommon(TransactionCase):
         api.get_customers.return_value = iter(records)
         api.get_orders.return_value = iter(records)
         api.get_variations.return_value = iter([])
+        api.get_categories.side_effect = lambda **_kw: iter([])
+        api.get_tags.side_effect = lambda **_kw: iter([])
+        api.get_attributes.side_effect = lambda **_kw: iter([])
+        api.get_attribute_terms.side_effect = lambda *_a, **_kw: iter([])
         return api

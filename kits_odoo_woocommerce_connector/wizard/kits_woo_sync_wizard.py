@@ -23,6 +23,7 @@ class KitsWooSyncWizard(models.TransientModel):
     operation = fields.Selection(
         selection=[
             ('import_customers', 'Import Customers'),
+            ('import_specific_customers', 'Import Specific Customer'),
             ('import_products', 'Import Products'),
             ('import_specific_products', 'Import Specific Products'),
             ('import_unshipped_orders', 'Import Unshipped Orders'),
@@ -59,6 +60,11 @@ class KitsWooSyncWizard(models.TransientModel):
         string='WooCommerce Product IDs',
         help='Comma-separated WooCommerce product ids.',
     )
+    customer_id_text = fields.Char(
+        string='WooCommerce Customer ID',
+        help='Numeric WooCommerce customer id. Uses the same matching rules as '
+             'Import Customers (binding → email → create).',
+    )
     order_ids_text = fields.Char(
         string='WooCommerce Order IDs',
         help='Comma-separated WooCommerce order ids.',
@@ -85,13 +91,19 @@ class KitsWooSyncWizard(models.TransientModel):
             self.instance_id = False
 
     @api.constrains(
-        'operation', 'product_ids_text', 'order_ids_text', 'date_from', 'date_to',
-        'mapping_file', 'mapping_filename',
+        'operation', 'product_ids_text', 'customer_id_text', 'order_ids_text',
+        'date_from', 'date_to', 'mapping_file', 'mapping_filename',
     )
     def _check_operation_values(self):
         for wiz in self:
             if wiz.operation == 'import_specific_products' and not wiz._parse_ids(wiz.product_ids_text):
                 raise ValidationError(self.env._('Enter at least one WooCommerce product id.'))
+            if wiz.operation == 'import_specific_customers':
+                ids = wiz._parse_ids(wiz.customer_id_text)
+                if len(ids) != 1:
+                    raise ValidationError(self.env._(
+                        'Enter exactly one WooCommerce customer id.'
+                    ))
             if wiz.operation == 'import_specific_orders' and not wiz._parse_ids(wiz.order_ids_text):
                 raise ValidationError(self.env._('Enter at least one WooCommerce order id.'))
             if wiz.date_from and wiz.date_to and wiz.date_to < wiz.date_from:
@@ -141,6 +153,10 @@ class KitsWooSyncWizard(models.TransientModel):
 
         if operation == 'import_customers':
             return 'woo_import_customers', name, {}
+        if operation == 'import_specific_customers':
+            return 'woo_import_customers', name, {
+                'woo_ids': self._parse_ids(self.customer_id_text),
+            }
         if operation == 'import_products':
             payload = {}
             if self.product_import_mode == 'new_and_updated':

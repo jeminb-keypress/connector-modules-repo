@@ -114,6 +114,78 @@
                             </setting>
                         </block>
                     </div>
+
+                    <block title="Product Import Defaults"
+                           name="woo_product_import_global_container">
+                        <setting id="woo_use_sales_description"
+                                 string="Use Sales Description"
+                                 help="Map WooCommerce long description to Odoo sales description and short description to internal description when creating products.">
+                            <field name="kits_woo_use_sales_description"/>
+                        </setting>
+                        <setting id="woo_odoo_weight_unit"
+                                 string="Odoo Weight Unit"
+                                 help="Target unit for converting WooCommerce product weights.">
+                            <field name="kits_woo_odoo_weight_unit"/>
+                        </setting>
+                    </block>
+
+                    <block title="Product Schedulers"
+                           name="woo_product_scheduler_container">
+                        <setting id="woo_cron_product_waiting"
+                                 string="Product Waiting List"
+                                 help="Process draft and retryable failed product waiting rows.">
+                            <div class="content-group">
+                                <div class="row mt16">
+                                    <label for="woo_cron_product_waiting_active" class="col-lg-3 o_light_label" string="Active"/>
+                                    <field name="woo_cron_product_waiting_active" class="col-lg-9"/>
+                                </div>
+                                <div class="row mt8">
+                                    <label for="woo_cron_product_waiting_interval" class="col-lg-3 o_light_label" string="Interval (minutes)"/>
+                                    <field name="woo_cron_product_waiting_interval" class="col-lg-9"/>
+                                </div>
+                                <div class="row mt8">
+                                    <label for="woo_cron_product_waiting_user_id" class="col-lg-3 o_light_label" string="Running User"/>
+                                    <field name="woo_cron_product_waiting_user_id" class="col-lg-9"/>
+                                </div>
+                            </div>
+                        </setting>
+                        <setting id="woo_cron_product_images"
+                                 string="Product Image Import"
+                                 help="Download images for completed waiting rows (max 100 per run).">
+                            <div class="content-group">
+                                <div class="row mt16">
+                                    <label for="woo_cron_product_images_active" class="col-lg-3 o_light_label" string="Active"/>
+                                    <field name="woo_cron_product_images_active" class="col-lg-9"/>
+                                </div>
+                                <div class="row mt8">
+                                    <label for="woo_cron_product_images_interval" class="col-lg-3 o_light_label" string="Interval (minutes)"/>
+                                    <field name="woo_cron_product_images_interval" class="col-lg-9"/>
+                                </div>
+                                <div class="row mt8">
+                                    <label for="woo_cron_product_images_user_id" class="col-lg-3 o_light_label" string="Running User"/>
+                                    <field name="woo_cron_product_images_user_id" class="col-lg-9"/>
+                                </div>
+                            </div>
+                        </setting>
+                        <setting id="woo_cron_auto_import"
+                                 string="Automatic Daily Product Import"
+                                 help="Enqueue incremental product imports for stores with automatic import enabled.">
+                            <div class="content-group">
+                                <div class="row mt16">
+                                    <label for="woo_cron_auto_import_active" class="col-lg-3 o_light_label" string="Active"/>
+                                    <field name="woo_cron_auto_import_active" class="col-lg-9"/>
+                                </div>
+                                <div class="row mt8">
+                                    <label for="woo_cron_auto_import_interval" class="col-lg-3 o_light_label" string="Interval"/>
+                                    <field name="woo_cron_auto_import_interval" class="col-lg-9"/>
+                                </div>
+                                <div class="row mt8">
+                                    <label for="woo_cron_auto_import_user_id" class="col-lg-3 o_light_label" string="Running User"/>
+                                    <field name="woo_cron_auto_import_user_id" class="col-lg-9"/>
+                                </div>
+                            </div>
+                        </setting>
+                    </block>
                 </app>
             </xpath>
         </field>

@@ -7,6 +7,10 @@ from odoo import fields, models
 from odoo.exceptions import UserError
 from odoo.fields import Command
 
+from odoo.addons.kits_odoo_woocommerce_connector.models.kits_woo_coupon_waiting import (
+    WAITING_PROCESS_BATCH,
+)
+
 _logger = logging.getLogger(__name__)
 
 
@@ -36,58 +40,82 @@ class KitsConnectorInstanceCoupon(models.Model):
         return self._woo_notify(self.env._('Coupon export job(s) queued.'))
 
     def _woo_import_coupons(self, job=None):
+        """Fetch coupons, enqueue waiting list, then process one batch."""
         self.ensure_one()
         api = self._woo_api()
         payload = (job.payload if job else None) or {}
         woo_ids = self._woo_parse_id_list(payload.get('woo_ids'))
         modified_after = payload.get('modified_after')
-        created = updated = skipped = failed = 0
+        Waiting = self.env['kits.woo.coupon.waiting']
+        queued = Waiting.browse()
+        failed = 0
         errors = []
 
         if woo_ids:
-            coupons = []
             for cid in woo_ids:
                 try:
                     remote = api.get_coupon(cid)
                     if remote.get('id'):
-                        coupons.append(remote)
-                    else:
-                        skipped += 1
+                        queued |= Waiting._enqueue(
+                            self,
+                            external_id=remote['id'],
+                            payload=remote,
+                            source='bulk_import',
+                            event_type='update',
+                        )
                 except Exception as exc:  # noqa: BLE001
                     failed += 1
                     errors.append(f'Coupon {cid}: {exc}')
-            coupon_iter = coupons
         else:
             params = {}
             if modified_after:
                 params['modified_after'] = str(modified_after).replace(' ', 'T')
-            coupon_iter = api.get_coupons(**params)
-
-        for woo_coupon in coupon_iter:
-            try:
-                result = self._woo_import_one_coupon(woo_coupon)
-                if result == 'created':
-                    created += 1
-                elif result == 'updated':
-                    updated += 1
-                else:
-                    skipped += 1
-            except Exception as exc:  # noqa: BLE001
-                failed += 1
-                errors.append(f"Coupon {woo_coupon.get('id')}: {exc}")
-                _logger.exception(
-                    'Woo coupon import failed for %s on instance %s',
-                    woo_coupon.get('id'), self.id,
+            for woo_coupon in api.get_coupons(**params):
+                if not woo_coupon.get('id'):
+                    continue
+                queued |= Waiting._enqueue(
+                    self,
+                    external_id=woo_coupon['id'],
+                    payload=woo_coupon,
+                    source='bulk_import',
+                    event_type='update',
                 )
+
+        batch = queued.filtered(lambda r: r.state == 'pending')[:WAITING_PROCESS_BATCH]
+        if batch:
+            batch.write({'state': 'processing'})
+        else:
+            batch = Waiting._claim_batch(self)
+        done, batch_failed, skipped = batch._process_entries(job=job) if batch else (0, 0, 0)
+        if queued.filtered(lambda r: r.state == 'pending'):
+            Waiting._enqueue_process_job(self)
 
         self.woo_last_coupon_sync = fields.Datetime.now()
         summary = (
-            f'Coupon import finished: created={created}, updated={updated}, '
-            f'skipped={skipped}, failed={failed}'
+            f'Coupon import finished: queued={len(queued)}, processed_done={done}, '
+            f'skipped={skipped}, failed={failed + batch_failed}'
         )
         if errors:
             summary = f'{summary}\n' + '\n'.join(errors[:20])
         return summary
+
+    def _woo_process_coupon_waiting(self, job=None):
+        self.ensure_one()
+        Waiting = self.env['kits.woo.coupon.waiting']
+        batch = Waiting._claim_batch(self)
+        done, failed, skipped = batch._process_entries(job=job) if batch else (0, 0, 0)
+        leftover = Waiting.search_count([
+            ('instance_id', '=', self.id),
+            '|',
+            ('state', '=', 'pending'),
+            '&', ('state', '=', 'failed'), ('attempt_count', '<', 3),
+        ])
+        if leftover:
+            Waiting._enqueue_process_job(self)
+        return (
+            f'Coupon waiting processed: done={done}, failed={failed}, '
+            f'skipped={skipped}, leftover={leftover}'
+        )
 
     def _woo_validate_woo_coupon_payload(self, woo_coupon):
         woo_id = woo_coupon.get('id')
@@ -142,11 +170,26 @@ class KitsConnectorInstanceCoupon(models.Model):
         return products, unresolved, deleted
 
     def _woo_resolve_coupon_category_ids(self, woo_ids):
+        """Resolve coupon category restrictions via connector-side kits.woo.category.
+
+        Native product.category M2M is filled only when a legacy odoo_category_id
+        link exists. Presence of kits.woo.category is enough to treat the Woo ID
+        as resolved (text fields remain the export source of truth).
+        """
         self.ensure_one()
         categories = self.env['product.category']
         unresolved = []
         deleted = []
         for wid in woo_ids or []:
+            woo_cat = self.env['kits.woo.category']._find(self, external_id=str(wid))
+            if woo_cat and woo_cat.sync_state == 'deleted':
+                deleted.append(str(wid))
+                continue
+            if woo_cat:
+                if woo_cat.odoo_category_id:
+                    categories |= woo_cat.odoo_category_id
+                continue
+            # Legacy fallback for databases that still have generic bindings only.
             binding = self._woo_binding()._kits_find_binding(
                 self, 'product.category', external_id=str(wid),
             )
@@ -221,9 +264,11 @@ class KitsConnectorInstanceCoupon(models.Model):
             'usage_limit': int(woo_coupon.get('usage_limit') or 0) or False,
             'usage_limit_per_user': int(woo_coupon.get('usage_limit_per_user') or 0) or False,
             'individual_use': bool(woo_coupon.get('individual_use')),
+            'exclude_sale_items': bool(woo_coupon.get('exclude_sale_items')),
             'free_shipping': bool(woo_coupon.get('free_shipping')),
             'minimum_amount': float(woo_coupon.get('minimum_amount') or 0.0),
             'maximum_amount': float(woo_coupon.get('maximum_amount') or 0.0),
+            'usage_count': int(woo_coupon.get('usage_count') or 0),
             'email_restrictions': ','.join(
                 woo_coupon.get('email_restrictions') or []
             ) or False,
@@ -254,6 +299,11 @@ class KitsConnectorInstanceCoupon(models.Model):
             'code': code,
             'discount_type': discount_type,
             'restriction_error': bool(coupon.restriction_error),
+            'date_modified': (
+                woo_coupon.get('date_modified_gmt')
+                or woo_coupon.get('date_modified')
+                or False
+            ),
         })
         if binding_state_msg:
             binding = self._woo_binding()._kits_find_binding(
@@ -342,10 +392,19 @@ class KitsConnectorInstanceCoupon(models.Model):
         return woo_ids
 
     def _woo_categories_to_woo_ids(self, categories, *, label):
+        """Map native categories to Woo IDs via connector kits.woo.category links."""
         self.ensure_one()
         woo_ids = []
         missing = []
         for categ in categories:
+            woo_cat = self.env['kits.woo.category'].search([
+                ('instance_id', '=', self.id),
+                ('odoo_category_id', '=', categ.id),
+                ('external_id', '!=', False),
+            ], limit=1)
+            if woo_cat and woo_cat.sync_state != 'deleted':
+                woo_ids.append(int(woo_cat.external_id))
+                continue
             binding = self._woo_binding()._kits_find_binding(
                 self, 'product.category', odoo_record_id=categ.id,
             )
@@ -356,7 +415,7 @@ class KitsConnectorInstanceCoupon(models.Model):
         if missing:
             raise UserError(self.env._(
                 'Cannot export coupon %(label)s category restrictions: categories '
-                'without a binding on this store: %(names)s.',
+                'without a WooCommerce category on this store: %(names)s.',
                 label=label,
                 names=', '.join(missing[:10]),
             ))
@@ -380,6 +439,7 @@ class KitsConnectorInstanceCoupon(models.Model):
             'discount_type': coupon.discount_type,
             'amount': str(coupon.amount),
             'individual_use': coupon.individual_use,
+            'exclude_sale_items': coupon.exclude_sale_items,
             'free_shipping': coupon.free_shipping,
             'description': coupon.description or coupon.name or '',
         }

@@ -495,6 +495,9 @@ class TestWooDeletionAndSyncRules(WooConnectorCommon):
         api.get_variations.return_value = iter([])
         with self._patch_api(api):
             self.instance._woo_process_product_webhook(job=fresh)
+            self.env['kits.woo.product.waiting']._process_pending_for_instance(
+                self.instance, limit=10,
+            )
         self.assertEqual(template.name, 'Current Name')
         self.assertEqual(
             self.env['kits.woo.product.binding']._find(self.instance, external_id='84').title,

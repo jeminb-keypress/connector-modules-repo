@@ -8,7 +8,7 @@
 
 Odoo 20 WooCommerce connector that syncs products, customers (import-only), sales orders, coupons, and inventory for one or more WooCommerce stores. Built as a **separate** addon under `custome/20.0/kits_odoo_woocommerce_connector` (sibling of the base connector — not nested inside it).
 
-**Current version:** `20.0.1.19.0`. Depends on base `20.0.1.10.1` (Common Connector Library).
+**Current version:** `20.0.1.29.0`. Depends on base `20.0.1.10.1` (Common Connector Library).
 
 Owns concrete **`kits.woo.instance`** (connection UI, credentials, store settings). The base module has no instance model or connection menu.
 
@@ -27,12 +27,18 @@ kits_odoo_woocommerce_connector
     ├─ extends kits.connector.sync.job   (_run_woo_* handlers)
     ├─ kits.woo.customer.binding         (M2O → kits.woo.instance; soft-delete)
     ├─ kits.woo.customer.waiting         (queue for bulk import + customer webhooks)
+    ├─ kits.woo.product.waiting          (queue for product import + product webhooks + deferred images)
+    ├─ kits.woo.coupon.waiting           (queue for coupon import + coupon webhooks)
+    ├─ kits.woo.product.field.mapping    (per-store extra Woo → Odoo field maps)
     ├─ kits.woo.webhook                  (per-topic remote webhook records + secrets)
-    ├─ kits.woo.product.binding / variant.binding
+    ├─ kits.woo.product.binding / variant.binding  (Products / Product Variants menus)
+    ├─ kits.woo.category / tag / attribute / attribute.term  (connector-owned catalog)
+    ├─ kits.woo.coupon                   (Product Coupons menu)
     ├─ services/woo_api.py               (REST helpers, pagination, 429 retry)
     ├─ controllers/woo_webhook.py        (public HMAC webhook endpoints)
     ├─ product.template / product.product / sale.order field extensions
-    └─ cron: auto order/inventory + Process Customer Waiting List (5 min)
+    └─ crons: schedule jobs (15m); customer/product/coupon waiting (5m);
+              product images (50m); daily auto product import (1d)
                  │
                  ▼
         kits_odoo_base_connector (mixin, jobs/logs/bindings via Reference, HTTP)
@@ -42,8 +48,11 @@ kits_odoo_woocommerce_connector
 
 | Job type | Handler | Purpose |
 |----------|---------|---------|
-| `woo_import_products` | `_run_woo_import_products` | Woo → Odoo products |
+| `woo_import_products` | `_run_woo_import_products` | Woo → Odoo: sync catalog, enqueue product waiting, process batch |
 | `woo_export_products` | `_run_woo_export_products` | Odoo → Woo products |
+| `woo_auto_import_products` | `_run_woo_auto_import_products` | Incremental daily product import (modified-after checkpoint) |
+| `woo_process_product_waiting` | `_run_woo_process_product_waiting` | Drain draft + retryable failed product waiting rows (≤50/batch) |
+| `woo_process_product_images` | `_run_woo_process_product_images` | Deferred image download for done waiting rows (≤100/run) |
 | `woo_import_customers` | `_run_woo_import_customers` | Woo → Odoo: enqueue waiting list, then process |
 | `woo_export_customers` | _(removed)_ | Legacy job type raises; customer export not supported |
 | `woo_process_customer_waiting` | `_run_woo_process_customer_waiting` | Drain pending + retryable failed waiting rows (≤50/batch) |
@@ -54,10 +63,11 @@ kits_odoo_woocommerce_connector
 | `woo_export_categories` | `_run_woo_export_categories` | Category export |
 | `woo_import_tags` | `_run_woo_import_tags` | Tag import |
 | `woo_import_attributes` | `_run_woo_import_attributes` | Attribute + term import with bindings |
-| `woo_import_coupons` / `woo_export_coupons` | `_run_woo_*_coupons` | Coupon import, export, and update |
+| `woo_import_coupons` / `woo_export_coupons` | `_run_woo_*_coupons` | Coupon import (enqueue waiting + process), export, and update |
+| `woo_process_coupon_waiting` | `_run_woo_process_coupon_waiting` | Drain draft + retryable failed coupon waiting rows (≤50/batch) |
 | `woo_export_tags` | `_run_woo_export_tags` | Tag export and update |
 | `woo_export_shipments` | `_run_woo_export_shipments` | Set Woo orders to completed after Odoo delivery |
-| `woo_webhook_product` / `order` / `coupon` | `_run_woo_webhook_*` | Non-customer webhooks |
+| `woo_webhook_product` / `order` / `coupon` | `_run_woo_webhook_*` | Product/order immediate or queued; coupon create/update → waiting; delete immediate |
 
 ### Menus
 
@@ -66,12 +76,19 @@ The base module has no app menu. This module owns WooCommerce.
 1. Dashboard (OWL client action `kits_woo_dashboard`)
 2. Stores
 3. Sale: Orders, Customers, **Customer Waiting List**, Customer Bindings, Refunds
-4. Product: Products, Product Bindings, Variant Bindings
+4. **Product (seven connector-owned menus):**
+   - Products → `kits.woo.product.binding`
+   - Product Variants → `kits.woo.variant.binding`
+   - Product Categories → `kits.woo.category`
+   - Product Attributes → `kits.woo.attribute`
+   - Product Attribute Terms → `kits.woo.attribute.term`
+   - Product Tags → `kits.woo.tag`
+   - Product Coupons → `kits.woo.coupon`
+   - (also under Logs / Sale as applicable) Product Waiting List, Coupon Waiting List
 5. Sync Operations (connector administrator)
 6. Sync Jobs
 7. Logs
-8. Coupons
-9. Configuration: WooCommerce Settings → standard Odoo Settings app (`res.config.settings`, module `kits_odoo_woocommerce_connector`) with instance picker + webhook switches (connector administrator). Stores remain under the Stores menu; instance form Webhooks tab retained.
+8. Configuration: WooCommerce Settings → standard Odoo Settings app (`res.config.settings`, module `kits_odoo_woocommerce_connector`) with instance picker, Public Webhook URL / Rebuild, four webhook resource switches, global product import defaults (Use Sales Description, Odoo Weight Unit), and product scheduler enable/interval/user controls (connector administrator). Stores remain under the Stores menu; instance form Webhooks tab is operational only (Refresh + list/actions).
 
 ### Connector Dashboard (`20.0.1.14.8`)
 
@@ -108,26 +125,32 @@ There is no generic Bindings **menu**. The store form still has a base **Binding
 
 | Path | Responsibility |
 |------|----------------|
-| `__manifest__.py` | Version `20.0.1.15.2`. Depends: base connector, sale_management, sale_stock, stock, website_sale, delivery, payment, account |
+| `__manifest__.py` | Version `20.0.1.23.0`. Depends: base connector, sale_management, sale_stock, stock, website_sale, delivery, payment, account |
+| `models/kits_woo_catalog.py` | Connector-owned `kits.woo.category` / `tag` / `attribute` / `attribute.term` |
+| `models/kits_woo_coupon_waiting.py` | Coupon waiting queue (import + create/update webhooks) |
+| `views/kits_woo_catalog_views.xml` | List/form/search for catalog models + product/variant catalog actions |
 | `services/woo_api.py` | WooCommerce REST facade (paginated lists, CRUD, 429 backoff) |
 | `models/kits_connector_instance.py` | Woo fields, auth hooks, connection test, enqueue actions, schedule cron |
 | `models/kits_connector_instance_image.py` | Main/gallery/variant image sync via `website_sale` `product.image`; export uploads via WP XML-RPC |
 | `models/kits_woo_customer_binding.py` | Customer binding + `sync_state` (`synced`/`error`/`manual_review`/`deleted_remotely`) + `remote_modified_at` |
 | `models/kits_woo_customer_waiting.py` | Customer waiting-list queue, enqueue/process (≤50/batch, auto-retry failed ≤3), cron, concurrency claim |
+| `models/kits_woo_product_waiting.py` | Product waiting-list queue (draft/failed/done/cancelled), deferred images, cron, concurrency claim |
+| `models/kits_woo_product_field_mapping.py` | Per-store extra Woo → Odoo template/variant field maps |
 | `models/kits_woo_product_binding.py` | Product binding and variant binding |
 | `models/kits_woo_binding_sync.py` | Shared sync state for product and variant bindings |
 | `models/kits_woo_dashboard.py` | Read-only dashboard data API / quick actions |
-| `models/kits_connector_instance_product.py` | Product import/export + attributes/variants/tags/barcode |
+| `models/kits_connector_instance_product.py` | Product import/export + waiting enqueue + weight/price/mapping |
 | `models/kits_connector_instance_customer.py` | Customer import → waiting list (no export) + guest-safe order partner helper |
 | `models/kits_connector_instance_order.py` | Order import, failure retry list, lines, shipping/discount, confirm; billing/shipping children |
 | `models/kits_connector_instance_inventory.py` | Warehouse-scoped inventory export, including Export Stock From |
 | `models/kits_connector_instance_mapping.py` | CSV/Excel product mapping. Links existing products only. |
 | `models/account_move.py` | Refund in WooCommerce from a customer credit note |
-| `models/kits_woo_webhook.py` | Per-topic webhook records (remote id, status, secret, activate/stop/delete/refresh) |
-| `models/kits_connector_instance_webhook.py` | Four resource switches + temp fields, enable/pause/refresh orchestration, processors |
-| `controllers/woo_webhook.py` | Public HTTP `/kits_woo/webhook/<id>/<resource>` with per-webhook HMAC |
+| `models/kits_woo_webhook.py` | Per-topic webhook records; remote register/PUT rebuild; activate/stop/delete/refresh |
+| `models/kits_connector_instance_webhook.py` | Four resource switches, Public Webhook URL, enable/pause/refresh/rebuild orchestration, processors |
+| `controllers/woo_webhook.py` | Public HTTP `/kits_woo/webhook/<id>/<resource>` with per-webhook HMAC-SHA256 |
+| `wizard/res_config_settings.py` | WooCommerce Settings: instance picker, Public Webhook URL, four switches |
 | `models/kits_connector_sync_job.py` | `_run_woo_*` dispatch wrappers incl. waiting-list processor |
-| `models/product_*.py` / `sale_order.py` / `res_partner.py` | UI/tracking fields (`woo_is_store_customer`, Fetch, …) |
+| `models/product_*.py` / `sale_order.py` / `res_partner.py` | UI/tracking fields (`woo_is_store_customer`, stored `woo_instance_ids` Connected Stores, Fetch, …) |
 | `tests/` | Mocked API TransactionCase + HttpCase webhook + waiting-list coverage |
 | `data/product_data.xml` | Shipping + discount service products |
 | `data/ir_cron_data.xml` | Auto-schedule cron (15 min) |
@@ -151,28 +174,33 @@ Required for WooCommerce platform instances:
 - **Consumer Key / Secret** → `woo_consumer_key` / `woo_consumer_secret` (manager group only)
 - **Company**, optional **warehouse**, **pricelist**, **sales team**
 - **Order statuses** CSV (default `processing,completed`)
-- **Import Product Images** (`woo_import_images`, default True)
-- **Synchronize Price** (`woo_sync_price`, default True)
-- **Synchronize Weight** (`woo_sync_weight`, default False)
-- **Create Products Automatically** (`woo_create_products`, default True)
+- **Copy Product Images** (`woo_import_images`, default True) — deferred image job except order-driven imports
+- **Copy Product Prices** (`woo_sync_price`, default True) into **Main Pricelist** (`woo_regular_pricelist_id`) and optional **Sale Pricelist** (`woo_sale_pricelist_id`)
+- **Synchronize Weight** (`woo_sync_weight`, default True) with **WooCommerce Weight Unit** (`woo_weight_unit`) → global Odoo weight unit
+- **Automatically Create Products** (`woo_create_products`, default **False**)
+- **Default Product Category** (`woo_default_product_categ_id`) for newly created products without mapped categories
+- **Extra Field Mapping** (`woo_product_field_mapping_ids`)
 - **Match Products by SKU** / **Allow Unmapped Order Lines**
-- **Auto Import Orders** / **Auto Export Products** / **Auto Export Inventory** flags (customers are webhook + manual/fetch only; no auto cron import)
+- **Auto Import Orders** / **Automatic Daily Product Import** (`woo_auto_import_products`) / **Auto Export Products** / **Auto Export Inventory**
+- **Last Successful Product Import** (`woo_last_product_import`) — incremental checkpoint (advanced only after successful fetch+queue)
+- Global Settings: **Use Sales Description**, **Odoo Weight Unit** (`kits_woo.*` config parameters)
 - **Image export media upload** (optional): WordPress username/password stored as `config_json` keys `woo_wp_username` / `woo_wp_password` for WP XML-RPC `metaWeblog.newMediaObject`. Credentials tab shows them **read-only** (password masked as `********`). Managers set/update them via **Set WordPress Media Credentials** (`kits.woo.wp.media.credentials`). Raw `config_json` is not shown on the Woo store form.
-- **Webhooks** (Webhooks tab, manager-only) — redesigned in `20.0.1.17.0`:
-  - Four **stored** switches (default False): `woo_webhook_product_enabled`, `woo_webhook_customer_enabled`, `woo_webhook_order_enabled`, `woo_webhook_coupon_enabled`.
-  - Matching **temporary** form fields (`*_tmp`) are edited on the tab; on save only **changed** switches call the API (enable → register/activate; disable → pause, never delete).
+- **Webhooks** — redesigned in `20.0.1.17.0`–`20.0.1.19.0`:
+  - **Settings → WooCommerce** (connector admin): instance picker; **Public Webhook URL** + effective URL + warning + **Rebuild Webhook Delivery URLs**; four resource switches (product/customer/order/coupon). Save-diff only changed switches (enable → register/activate; disable → pause, never delete).
+  - **Store form → Webhooks tab** (manager): operational only — help text, **Refresh Webhooks**, list with Activate / Stop / trash-icon Delete (`delete="0"` on list so no duplicate row-delete). No Delivery group / Rebuild / resource switches on this tab.
+  - Four **stored** switches (default False): `woo_webhook_product_enabled`, `woo_webhook_customer_enabled`, `woo_webhook_order_enabled`, `woo_webhook_coupon_enabled` (+ non-stored `*_tmp` for Settings save-diff).
   - **Invariant:** stored switch = user intent; `kits.woo.webhook.status` = last known WooCommerce remote state (`active`/`paused`/`disabled`). Never infer one from the other (Woo can auto-disable after 5 failed deliveries).
   - One `kits.woo.webhook` row per `(instance, topic)` with its own secret (manager group field ACL), remote id, delivery URL, last delivery id/date, last error.
   - Topics: `*.created` / `*.updated` / `*.deleted` for product, customer, order, coupon (12 total). No invented `restored` topics.
   - `public_webhook_url` — optional per-store Public Webhook URL origin (no path/query/fragment). Empty → `get_base_url()` / `web.base.url`. Alias `woo_webhook_public_base_url` kept as related for compatibility.
-  - Delivery URL: `{base}/kits_woo/webhook/{instance_id}/{resource}`.
-  - Refresh Webhooks syncs remote status; 404 removes stale locals; missing remote id re-registers with saved secret.
-  - Individual Activate / Stop / Delete on each webhook row.
+  - Delivery URL via `_get_webhook_delivery_url(topic)`: `{base}/kits_woo/webhook/{instance_id}/{resource}`. New registration and enable/re-enable always use the effective URL; if local `delivery_url` differs from effective, enable **PUTs** via `_woo_register_remote()` (does not refresh-only). Rebuild action PUTs remotes; preserves id/secret; skips unchanged; local URL updates only after remote success.
+  - Refresh Webhooks syncs remote status; 404 removes stale locals; missing remote id re-registers with saved secret. Refresh does **not** push a new public URL.
+  - Incoming auth: resolve by `X-WC-Webhook-ID` → local record; topic + source host + active status; **HMAC-SHA256** of raw body with per-webhook secret vs `X-WC-Webhook-Signature` (Base64); delivery-id idempotency. Not REST consumer-key auth.
   - Store deactivate: DELETE remotes then locals (retain on failure + `last_error`); clear all four switches; disable auto sync flags. Reactivate does **not** recreate webhooks.
   - Legacy `woo_webhook_ids` / `woo_webhook_secret` / `woo_webhook_enabled` / `woo_resource_webhooks_enabled` kept for migration only.
   - **Production requires a public HTTPS Odoo URL** (or reverse proxy / tunnel).
-  - **Multi-DB Odoo:** prefer `--db-filter` / `dbfilter`. System param `kits_woo.webhook_db_allowlist` when using `X-Odoo-Database`.
-  - **Local WordPress caveat:** WP may reject loopback delivery URLs; see `tools/kits-allow-local-odoo-webhooks.php`.
+  - **Multi-DB Odoo:** prefer `dbfilter` / `db_name` / single DB. Without a selected DB, Woo POSTs get HTML 404 before the controller runs. `?db=` alone may not select the DB on Odoo 20; `X-Odoo-Database` works but Woo cannot set custom headers. System param `kits_woo.webhook_db_allowlist` when using that header.
+  - **Local WordPress caveat:** `wp_safe_remote_post` rejects `localhost`/`127.0.0.1` unless a small allow plugin is active (e.g. `hello.php` / `tools/kits-allow-local-odoo-webhooks.php` on each WP site used for testing).
 
 ### Credentials tab (Woo, manager-only)
 
@@ -229,7 +257,7 @@ A queued operation opens WooCommerce → Sync Jobs for that job. If the same sto
 
 ### Record buttons
 
-- Product form and product list: Export to WooCommerce, Update from WooCommerce, Publish on WooCommerce, Unpublish on WooCommerce. Publish and unpublish change the WooCommerce status on each selected store. They do not archive the Odoo product.
+- Product form and product list: Export to WooCommerce, Update from WooCommerce, Publish on WooCommerce, Unpublish on WooCommerce, **Store Notes** smart button (opens `kits.woo.product.binding` for that template). Publish and unpublish change the WooCommerce status on each selected store. They do not archive the Odoo product.
 - Contact form (top-level, Connector Administrator):
   - **Fetch Customer** — enter a Woo customer id; shared matcher (binding → email reuse → create). Role must be `customer`.
   - **Update from WooCommerce** — only when an active customer binding exists. Queues import for that Woo id. Does **not** overwrite name, email, phone, or existing addresses; may add **missing** billing/shipping children and refresh binding sync metadata. Multi-store companies open a store picker.
@@ -237,15 +265,19 @@ A queued operation opens WooCommerce → Sync Jobs for that job. If the same sto
 - Customer credit note: Refund in WooCommerce. One remote refund per credit note. The amount cannot exceed the order total minus refunds already marked done. No second credit note is created. The WooCommerce call uses `api_refund` false.
 - Store form: base smart buttons for Sync Jobs, Logs, and **Bindings** (`kits.connector.binding` only — not customer/product/variant dedicated bindings).
 
-### Products import
-1. Paginate `GET /products`. `trash` and a remote delete archive this store’s product binding and its variant bindings (`active=False`, `sync_state=deleted`, `exists_in_store=False`) and drop only this store from Connected Instances. The Odoo template and variants stay.
-2. Validate every variant before writing. Each variant needs its own SKU. A repeated SKU inside the same Woo product fails the product. A variable product with no option values fails. The product import uses a savepoint, so a failed product leaves no partial binding.
-3. Match, in order: variant binding for this store + external variation id → product binding for this store + the same external id (the template’s variant) → variant binding for this store + SKU (when `woo_match_by_sku`) → exactly one `product.product` with that SKU in this company or with no company. Several Odoo variants with that SKU fail the product. A simple product uses the Woo product id as the external variant id.
-4. When an Odoo product matches, reuse it. Create this store’s product binding if it is missing, then the variant binding. Do not rewrite the Odoo name, description, tags, SKU, barcode, or cost. Price, images, and weight are written only when `woo_sync_price`, `woo_import_images`, and `woo_sync_weight` are on. Cost is written only when the Odoo variant is created.
-5. When nothing matches, create the Odoo product only if `woo_create_products` is on. Otherwise fail that product and log the reason. Deleting the Odoo product removes its bindings and does not leave a tombstone, so a later import can create again when automatic creation is on.
-6. Store title, short and long descriptions, type, published/draft, taxable, virtual, categories, tags, image URLs, and store dates stay on `kits.woo.product.binding`. Variant title, SKU, URL, manage-stock, quantity rule, and variant images stay on `kits.woo.variant.binding`.
-7. Images (if `woo_import_images`): main → `image_1920`; extras → `product_template_image_ids` (`website_sale` required); variant → `image_variant_1920`; hash skip; **videos out of scope**
-8. Import All updates matched products. Import New and Updated Only skips a linked product whose WooCommerce modification date is not newer than `store_write_date`. Do Not Update Existing Products skips every product that already has a binding for this store. Specific ids import only those WooCommerce products. Automatic creation and the match order above still apply.
+### Products import (`20.0.1.20.0`)
+1. **Catalog first:** synchronize categories, tags, and attributes before product fetch.
+2. Paginate `GET /products` (100/page). For variable products, fetch all variations and attach them before queueing; variation fetch failure fails that product (no incomplete import).
+3. Enqueue each product onto `kits.woo.product.waiting` (dedupe by store + Woo product id for draft/failed). Process the queued batch via the waiting-list processor (≤50/run; cron every 5 minutes; auto job at 50 draft rows). Failed rows auto-retry up to 3 attempts, then stay failed for manual Retry.
+4. `trash` / remote delete archives this store’s product binding and its variant bindings only. The Odoo template and variants stay. Restoration of an archived binding reactivates it and re-queues.
+5. Validate before writing: only `simple`/`variable`; each variant needs its own SKU; duplicate SKUs fail; variable products need option definitions + variations. Savepoint per product.
+6. Match order: variant binding (this store + variation id) → product binding (this store + same id for simple) → variant binding by SKU (this store) → exactly one Odoo `product.product` by SKU (company or shared). Ambiguous SKUs fail.
+7. Matched products: do not rewrite Odoo name/description/SKU/barcode. Store-specific binding `title` / `description` / `description_short` are updated from Woo (last sync wins). Prices → configured pricelists when Copy Prices is on; weight converted Woo unit → Odoo unit when Synchronize Weight is on. Images deferred to the image job unless order-driven (`sync_images_now`).
+8. No match: create only when Automatically Create Products is on (default off). Storable by default; virtual / all-virtual-variable → `service`. Default category + Use Sales Description mapping apply on create. Native name is taken from Woo on create; the store note is also filled. If a newly created variable product links zero variants, the new Odoo product is removed and the waiting row fails.
+9. Extra field mappings apply after normal processing (soft-fail + log).
+10. Images: waiting `image_state=pending` after successful product apply when Copy Images is on; separate cron/job every 50 minutes processes ≤100 done rows; hash skip; order import downloads images immediately.
+11. Manual modes: Import All / New and Updated Only / Do Not Update Existing / Specific IDs. Daily auto import uses `woo_last_product_import` (first run: previous 30 days) and advances the checkpoint only after successful fetch+queue.
+12. Product webhooks: accept known bindings (including archived) or published non-variation products; ignore unknown draft/unpublished and standalone variations; queue waiting list (batch at 50); delete archives bindings only.
 
 ### Product mapping
 
@@ -253,11 +285,28 @@ CSV and xlsx. The header needs a WooCommerce product id (`woo_id` or `woo_produc
 
 ### Products export
 1. Templates that list this store on `woo_instance_ids` (drives computed `woo_sync_to_store`), or explicit `template_ids` (no silent mass fallback)
-2. Map by **binding** for this store (update Woo id) else **create** on Woo and bind — export does **not** match Woo by SKU. `deleted` / `deleted_local` bindings are skipped unless the job has `allow_recreate` (selected Export / wizard IDs). Recreate first checks the old id; a 404 may create one new product and rebind. Scheduled cron sets `automatic` and never recreates. A 404 on an automatic update marks the binding deleted remote and does not create.
-3. Push name/price/desc/SKU/attrs/tags/images; export variations for current Odoo variants only (**does not** delete orphan Woo variations)
-4. Image export: upload bytes via WP XML-RPC then attach by media id (modern Woo rejects `data:` URIs); needs `config_json` WP credentials
-5. **Not realtime:** Odoo product edits do not push until Export Products / scheduled job runs
-6. Multi-store: one Odoo template can have **one binding per store** (different Woo product ids)
+2. **Catalog prep once per store/job** (`_woo_prepare_catalog_for_product_export`, `20.0.1.29.0`): lock store row → sync remote categories/tags (safe upsert: external id first, pending slug only, never steal another row’s id; preserve parents when product payloads omit `parent`) → re-collect **assigned** cats/tags on those product notes (dedupe, expand parents) → export missing assigned categories parent-first → export missing assigned tags → per-product validation (SKU + missing parent/child names). Unrelated pending catalog rows are **not** exported. Skipped when `update_groups` excludes `basic_details`. Remote sync failure aborts the job; individual unresolved assignments fail only the affected product.
+3. Map by **binding** for this store (update Woo id) else **create** on Woo and bind — export does **not** match Woo by SKU. `deleted` / `deleted_local` bindings are skipped unless the job has `allow_recreate` (selected Export / wizard IDs). Recreate first checks the old id; a 404 may create one new product and rebind. Scheduled cron sets `automatic` and never recreates. A 404 on an automatic update marks the binding deleted remote and does not create.
+4. Push **store-specific** name/descriptions (from the product binding note, store language) plus price/SKU/attrs/tags/images; export variations for current Odoo variants only (**does not** delete orphan Woo variations). Empty store title falls back to the native product name in the store language — never a blank Woo title. Category/tag payload uses connector external IDs only; invalid/missing IDs **raise** (never silently omit).
+5. Image export: upload bytes via WP XML-RPC then attach by media id (modern Woo rejects `data:` URIs); needs `config_json` WP credentials
+6. **Not realtime:** Odoo product edits do not push until Export Products / scheduled job runs
+7. Multi-store: one Odoo template can have **one binding per store** (different Woo product ids)
+8. Optional job `payload.update_groups`: `basic_details` (name/descriptions/sku/cats/tags), `price`, `images`, `status`, `inventory`, `attributes`. Omit for full export. Publish/unpublish actions send status only.
+
+### Category/tag resolution (`20.0.1.29.0`)
+- Matching (same store only): Woo external id → pending slug (never overwrite a different row that already owns that id) → create. `_kits_norm_external_id` rejects `False`/`None`/`null` strings. Import create catches unique conflicts and updates the owner.
+- Product notes may assign **pending** same-store cats/tags; export prep pushes **only assigned** (+ parents). Cross-store and deleted assignments stay rejected.
+- Waiting/webhook/order product paths reuse ensure helpers (no full catalog pull per row). Bulk product import still runs `_woo_sync_catalog_prerequisites` first.
+
+### Store-specific product presentation (`20.0.1.26.0`)
+
+- **Native `product.template` / `product.product`** remain the master for shared business data (internal name, SKU, weight, etc.).
+- **`kits.woo.product.binding`** owns per-store presentation: `title`, `description`, `description_short` (all `translate=True`), plus existing cats/tags/prices/published. Independent per store.
+- **`kits.woo.variant.binding.title`**: store-specific variant label (`translate=True`). WooCommerce REST **variations do not accept an independent `name` field**; export still sends parent product name + attributes/options. The title is stored for UI/import and is **not** sent as `name` on variation create/update.
+- Store language: `kits.woo.instance.lang_id` selects which translated values are read/written on import/export.
+- Prepare (`_woo_prepare_product_binding_for_store`): creates a pending binding (`external_id` empty) when linking a store; copies native name/descriptions only when store fields are empty.
+- Import last-wins on the store note; never overwrites native name for matched products. Unexported local title changes log a clear warning before overwrite.
+- Product binding list/form show store title beside native product; search by store title and native name; native product smart button **Store Notes**.
 
 ### Customers (import only — no Odoo→Woo customer export) — `20.0.1.15.2`
 1. **Waiting list** (`kits.woo.customer.waiting`): bulk import and customer webhooks enqueue here first. Matching/partner writes run in the waiting-list processor. Sync job `woo_process_customer_waiting` (and a 5‑minute cron) process **pending** and **failed** rows eligible for retry. At 50 eligible pending rows a process job is enqueued. **Each process batch handles at most 50 rows**; leftovers stay pending and a follow-up process job is queued. Max **3** automatic attempts on failures, then `manual`. Ambiguous email matches go to `manual` immediately (never auto-retried). Manual **Retry** resets `attempt_count` to 0. Duplicate store+external id refreshes an open pending/failed/manual payload; a row already `processing` is **not** reset to pending (a follow-up pending row is created instead). Claim uses `FOR UPDATE SKIP LOCKED`.
@@ -270,14 +319,15 @@ CSV and xlsx. The header needs a WooCommerce product id (`woo_id` or `woo_produc
 8. **Guests** (`customer_id` 0) never get customer bindings.
 9. **Order import customer rule (`20.0.1.16.2`):** on a **new** order, import the registered customer only when no active binding exists yet (no duplicates). If the customer already exists, reuse the binding and do not update the contact. Re-importing an existing order never refreshes partner/addresses. Guest checkout still matches by billing email or creates a guest contact (no customer binding).
 10. **Customer export is not supported.**
-11. `woo_is_store_customer` follows **active** bindings only. `woo_sync_state` aggregates active bindings; when **all** bindings are `deleted_remotely`, status is **Deleted Remotely** (not Not Linked). Customers menu lists contacts with an active binding.
+11. `woo_is_store_customer` follows **active** bindings only. `woo_sync_state` aggregates active bindings; when **all** bindings are `deleted_remotely`, status is **Deleted Remotely** (not Not Linked). Customers menu defaults to contacts with at least one Connected Store (`woo_instance_ids`).
+12. **Connected Stores** (`res.partner.woo_instance_ids`): stored, read-only Many2many → `kits.woo.instance`, derived from **active** `kits.woo.customer.binding` rows (relation `res_partner_woo_instance_rel`). Source of truth remains the binding; the M2M is recomputed on binding create/write/unlink (including soft-delete). Connectors tab shows tags. WooCommerce → Customers search: filters **Has WooCommerce Store** / **No WooCommerce Store**, Group By **Connected Store**. Base Char `kits_connected_instance_names` remains for generic connector display only and is no longer shown on the Woo contact form.
 
 ### Orders import
 1. Retry `woo_order_import_failures` by ID first, then paginate with `after=woo_last_order_sync`. A scoped wizard job does not retry the failure list and does not move the watermark.
 2. Unshipped uses Woo statuses `pending`, `processing`, and `on-hold`. Shipped uses `completed`. Cancelled uses `cancelled`. Specific orders use the given Woo ids. Date From and Date To apply to shipped and unshipped imports.
 3. An order that is already linked is updated in place: status, payment metadata, safe cancellation, and refunds. Confirmed lines are not rewritten.
 4. A cancelled Woo order does not create an Odoo order. If one is already linked, it is cancelled only when it has no done delivery and no invoice. Otherwise the skip reason is logged on the order and in Logs.
-5. Partner via `_woo_partner_from_order`; map lines (binding/SKU); fail unmapped unless allowed
+5. Partner via `_woo_partner_from_order` (customer workflow unchanged). Map lines via binding/SKU; if unknown, fetch the Woo product + variations, import with immediate images, then resolve the variant. Fail with a clear error if import fails (unless Allow Unmapped Order Lines).
 6. Shipping + discount + fee lines; tax-inclusive Woo clears Odoo line taxes
 7. Bind order **before** `action_confirm()`; never invent invoices/payments/stock moves
 8. A confirmed order’s delivery is a standard stock picking. Open it from the order’s Delivery button, or from Inventory → Operations → Deliveries. WooCommerce has no delivery menu.
@@ -292,9 +342,34 @@ Export Shipment Information sets the WooCommerce order status to `completed` whe
 4. `PUT` uses the variant external id. A variation is updated when its external id differs from the parent product id. Never `POST` a new product. HTTP 404 archives the binding and stops recovery retries.
 5. Stock-move completion enqueues each store independently. One store’s enqueue error does not stop the others.
 
-### Categories, tags, and coupons
+### Categories, tags, attributes/terms, and coupons (`20.0.1.23.0`)
 
-Import reuses the store binding for the same external id. Category export creates categories that are not yet linked and keeps the parent before the child. Category update only writes categories that already have a binding. Tag export creates a missing WooCommerce tag, or reuses one remote tag with the same name when exactly one exists. Tag update only writes linked tags. Coupon export creates coupons that are not yet linked. Coupon update only writes linked coupons. Unsupported coupon restrictions still block the export.
+**Categories and tags are connector-side source of truth** for WooCommerce sync. Native Odoo `product.category` / `product.tag` are **not** created, updated, or used for product import/export category/tag payloads.
+
+| Menu | Model | Native link |
+|------|-------|-------------|
+| Product Categories | `kits.woo.category` | optional legacy `odoo_category_id` only (unused by sync) |
+| Product Tags | `kits.woo.tag` | optional legacy `odoo_tag_id` only (unused by sync) |
+| Product Attributes | `kits.woo.attribute` | M2O → `product.attribute` (still required for variants) |
+| Product Attribute Terms | `kits.woo.attribute.term` | M2O → `product.attribute.value` |
+| Product Coupons | `kits.woo.coupon` | connector-owned; category restrictions resolve via `kits.woo.category` + text Woo IDs |
+
+- Import upserts `(instance_id, external_id)` connector records only.
+- Local create allowed without external id (`export_status=Not yet exported`).
+- Edit of exported fields marks `Update Required` (no API call on save).
+- **Export Selected** (list action) + Operations wizard export/update; category export is parent-first.
+- Product bindings assign only **exported** same-store `woo_category_ids` / `woo_tag_ids` (domain + constraints; no quick-create).
+- Product export builds Woo `categories` / `tags` from those M2Ms’ external IDs only.
+- Duplicate name/slug validation is case-insensitive and store-scoped.
+
+**Attributes / terms:** Sync-job import only (`woo_import_attributes`). **No waiting list / no webhooks** (Woo has no attribute topics). Match connector record + optional native attribute/value by name; per-term failures are logged without aborting siblings. Variable product import binds attributes when Woo payloads include attribute ids.
+
+**Product Coupons + waiting list:**
+- Import and `coupon.created` / `.updated` webhooks enqueue `kits.woo.coupon.waiting` (dedupe, ≤50/batch, 3 retries, store isolation), then process.
+- Deletes process immediately (soft-delete binding; keep Odoo coupon).
+- Cron `ir_cron_woo_coupon_waiting` every 5 minutes; job type `woo_process_coupon_waiting`.
+- Export creates unlinked coupons; update writes linked ones. Unsupported restrictions still block export.
+- Order import attaches coupon codes on discount lines when present.
 
 ### Monitoring / retries
 - WooCommerce → Sync Jobs and WooCommerce → Logs. The base module has no menu.
@@ -333,7 +408,10 @@ Import reuses the store binding for the same external id. Category export create
 |---------|--------|
 | Multi-store configuration | **Done** |
 | REST API + pagination + 429 retry | **Done** |
-| Product import (simple + variable, SKU match, tags, barcode) | **Done** |
+| Product import (simple + variable, waiting list, SKU match, tags, barcode) | **Done** (`20.0.1.20.0`) |
+| Product waiting list + deferred images + daily incremental import | **Done** (`20.0.1.20.0`) |
+| Weight unit conversion + regular/sale pricelists + extra field mapping | **Done** (`20.0.1.20.0`) |
+| Order import auto-fetches unknown products | **Done** (`20.0.1.20.0`) |
 | Product export (attrs/tags/images) | **Done** |
 | Image sync (main + multi gallery + variant; no video) | **Done** (`website_sale` required) |
 | Dedicated customer import | **Done** (role=`customer` only; store + Woo id then email reuse; waiting list ≤50/batch; no customer export) |
@@ -354,7 +432,7 @@ Import reuses the store binding for the same external id. Category export create
 | Category and coupon export / update | **Done**. Separate create and update modes. |
 | Per-instance sync status | **Done** on product, variant, and customer bindings (`sync_state`). Orders, coupons, categories, tags, attributes, and refunds still use the generic binding. |
 | Bindings / logs / retries | **Done**. Logs and jobs use the base models through WooCommerce menus. Customer, product, and variant bindings have their own menus. |
-| Mocked TransactionCase tests (`kits_woo`) | **Done** (0 failed, 0 errors of 101 tests on `odoo20-connectors-woo-tests`, 2026-11-03; includes wizard matrix for all 20 operations) |
+| Mocked TransactionCase tests (`kits_woo`) | **Done** (0 failed, 0 errors of **242** tests on `odoo-20`, 2026-11-16; includes assigned-only / safe upsert `20.0.1.29.0`) |
 | Live Woo E2E (products/customers/orders/images) | **Done** (see `LIVE_TEST_REPORT.md`) |
 | Realtime push on every Odoo write | **Not in scope** (marks Not Synced; export via job/action) |
 | Product gallery videos | **Not in scope** |
@@ -1653,3 +1731,196 @@ Completed Public Webhook URL design on top of 18.3:
 **Suite:** `odoo20-connectors-woo-tests`, `--test-tags=/kits_odoo_woocommerce_connector`: **0 failed, 0 error(s) of 177 tests** (after enable-url-push + multi-store rebuild regression tests).
 
 **Files modified:** `models/kits_connector_instance_webhook.py`, `models/kits_woo_webhook.py`, `wizard/res_config_settings.py`, `views/res_config_settings_views.xml`, `views/kits_connector_instance_views.xml`, `tests/__init__.py`, `tests/test_woo_webhook_management.py`, `tests/test_woo_public_webhook_url.py`, `__manifest__.py`, `ai.md`.
+
+### 2026-11-13 — Webhooks UI polish + live multi-store customer verification
+
+**UI (same version `20.0.1.19.0`):**
+- Confirmed store Webhooks tab has no Delivery / Rebuild (Settings only).
+- List Delete is trash-icon only (`icon="delete"`, no written label); embedded list `delete="0"` to avoid double delete controls.
+
+**Live / ops notes (DB `odoo-20`):**
+- Store 1 (`wordpress`) customer create/update/delete verified after multi-DB selection fixed (`dbfilter` / selected DB). Without DB selection Woo POSTs return HTML 404.
+- Store 2 (`wordpress2`): customer webhooks registered correctly but deliveries failed until local allow plugin `hello.php` was **activated** (`wp_safe_remote_post` blocked localhost). After activation: create #4/#5 → bindings synced; update #5 → waiting done; delete #5 → `deleted_remotely` + archived; Store 1 bindings unaffected.
+- Woo delivers webhooks **async** via Action Scheduler (`woocommerce_deliver_webhook_async`), usually seconds later.
+- Customer binding `sync_state=deleted_remotely` means soft-archive (`active=False`), not hard unlink — use Archived filter to see them.
+
+**ai.md refresh:** Section 4 Webhooks rewritten for Settings vs store-tab split, HMAC auth, enable URL-push, multi-DB and local WP caveats; file table versions; customer `kits_connected_instance_names` note.
+
+**Files modified:** `views/kits_connector_instance_views.xml`, `ai.md`.
+
+### 2026-11-13 — `20.0.1.20.0` Complete Woo → Odoo product import workflow
+
+Implemented the product import waiting-list architecture (mirroring customers without changing customer code), deferred images, daily incremental import, weight/price conversion, extra field mapping, webhook eligibility/batching, and order-time unknown product fetch.
+
+**New**
+- `kits.woo.product.waiting` — draft/processing/done/failed/cancelled; image_state pending/done; dedupe; ≤50 batch; 3 retries; FOR UPDATE SKIP LOCKED
+- `kits.woo.product.field.mapping` — validated Woo field/meta → safe Odoo template/variant fields
+- Crons: product waiting (5m), product images (50m), daily auto import (1d)
+- Settings: Use Sales Description, Odoo Weight Unit, scheduler enable/interval/user
+- Store settings: regular/sale pricelists, Woo weight unit, default category, auto import + checkpoint, create default OFF, copy prices/images labels
+- Tests: `tests/test_woo_product_waiting.py`
+
+**Changed**
+- `_woo_import_products` → catalog sync → enqueue waiting → process this fetch’s rows
+- `_woo_import_one_product` → optional deferred images; virtual→service; weight convert; pricelist sync; extra mappings; unsupported types rejected
+- Product webhooks → eligibility + waiting queue (no immediate import except delete)
+- Order product match → fetch/import unknown products with immediate images
+- Customer workflow intentionally untouched
+
+**Migration:** `migrations/20.0.1.20.0/post-migrate.py`
+
+**Suite:** DB `odoo-20`, `--test-tags=kits_woo`: **0 failed, 0 error(s) of 187 tests**.
+
+**Files created:** `models/kits_woo_product_waiting.py`, `models/kits_woo_product_field_mapping.py`, `views/kits_woo_product_waiting_views.xml`, `data/ir_cron_product_waiting.xml`, `migrations/20.0.1.20.0/post-migrate.py`, `tests/test_woo_product_waiting.py`
+
+**Files modified:** `models/__init__.py`, `models/kits_connector_instance.py`, `models/kits_connector_instance_product.py`, `models/kits_connector_instance_webhook.py`, `models/kits_connector_instance_order.py`, `models/kits_connector_sync_job.py`, `wizard/res_config_settings.py`, `views/*`, `security/ir.access.csv`, `tests/common.py`, `tests/test_woo_webhook_management.py`, `tests/test_woo_deletion_rules.py`, `tests/__init__.py`, `__manifest__.py`, `ai.md`
+
+### 2026-11-14 — `20.0.1.21.0` Attribute terms menu + coupon webhook hardening
+
+Audited **Product Attribute Terms** and **Product Coupons** against import/bind/multi-store/webhook/deletion expectations. Did **not** add customer/product-style waiting lists where the architecture already uses sync jobs (attributes) or immediate webhook jobs (coupons).
+
+**Implemented**
+- Menu **Product → Product Attribute Terms** (generic bindings for `product.attribute.value`, external id `attrId:termId`)
+- Menu label **Product Coupons** for `kits.woo.coupon`
+- Attribute/term import: per-term try/except + `_kits_log_operation`; attribute-level failure logging
+- Variable product import: match/bind `product.attribute` by Woo attribute id when present
+- Coupon import failures logged via `_kits_log_operation`; binding `external_data.date_modified` stored; coupon webhooks skip stale payloads
+- Tests: multi-store attribute term isolation; coupon create/update webhook + stale skip
+
+**Intentionally unchanged**
+- No attribute webhooks / waiting list (Woo has no attribute topics; catalog stays sync-job)
+- No coupon waiting list (immediate `woo_webhook_coupon` like orders)
+- Customer / product waiting workflows untouched
+
+**Suite:** DB `odoo-20`, `--test-tags=kits_woo`: **0 failed, 0 error(s) of 190 tests** (includes new attribute-term isolation, term resilience, and coupon create/update/stale webhook tests).
+
+### 2026-11-14 — `20.0.1.22.0` Connector-owned catalog + seven Product menus + coupon waiting
+
+Implemented the required catalog architecture: seven Product menus open connector-side records; categories/tags/attributes/terms are store-owned models; coupons use a waiting list like customers/products.
+
+**New models**
+- `kits.woo.category`, `kits.woo.tag`, `kits.woo.attribute`, `kits.woo.attribute.term` — `(instance_id, woo_id)` unique; sync state; optional native attribute/value links
+- `kits.woo.coupon.waiting` — draft/processing/done/failed; dedupe; ≤50 batch; 3 retries; FOR UPDATE SKIP LOCKED
+- Cron `ir_cron_woo_coupon_waiting` (5m); job `woo_process_coupon_waiting`
+
+**Menus / views**
+- Products → `kits.woo.product.binding` (enriched: SKU, prices, woo categories/tags M2M)
+- Product Variants → `kits.woo.variant.binding` (combination, prices, stock rule, sync)
+- Product Categories / Attributes / Attribute Terms / Tags / Coupons → new connector models
+- Removed obsolete generic “Product Bindings” duplicate menu
+
+**Workflows**
+- Catalog import upserts connector records; product import attaches woo categories/tags on bindings
+- Coupon import + create/update webhooks → waiting list; delete remains immediate soft-delete
+- Order discount lines include coupon codes when Woo payload has them
+- Coupon fields: `exclude_sale_items`, `usage_count` preserved/exposed
+
+**Migration:** `migrations/20.0.1.22.0/post-migrate.py` backfills `kits.woo.category` / `tag` from legacy generic bindings (jsonb-safe name cast)
+
+**Security:** ACL rows for new catalog + coupon waiting models (user/manager)
+
+**Webhook auth (unchanged):** HMAC-SHA256 via `X-WC-Webhook-Signature` and per-webhook secret (`_woo_verify_webhook_signature`); no weakening
+
+**Tests:** `tests/test_woo_catalog_menus.py`; coupon import assertions updated for waiting-list summaries
+
+**Intentionally unchanged:** customer export unsupported; invoice export unsupported; order/stock waiting remain job-based as before; attribute sync stays sync-job (no Woo attribute webhooks)
+
+**Files created:** `models/kits_woo_catalog.py`, `models/kits_woo_coupon_waiting.py`, `views/kits_woo_catalog_views.xml`, `data/ir_cron_coupon_waiting.xml`, `migrations/20.0.1.22.0/post-migrate.py`, `tests/test_woo_catalog_menus.py`
+
+**Files modified:** product/variant bindings, catalog/product/coupon/order/webhook/sync_job, coupon model, menus, binding/coupon views, `security/ir.access.csv`, `tests/__init__.py`, `tests/test_woo_catalog_coupon_webhook.py`, `__manifest__.py`, `ai.md`
+
+
+### 2026-11-14 — `20.0.1.23.0` Category/tag connector-side source of truth
+
+**Architecture**
+- `kits.woo.category` / `kits.woo.tag` are the only WooCommerce category/tag source for product sync.
+- Import/export no longer create, update, or bind native `product.category` / `product.tag`.
+- Product bindings use `woo_category_ids` / `woo_tag_ids` (same-store, exported-only); native M2Ms cleared on import.
+- Product export payload categories/tags come solely from connector external IDs.
+- Export status: Not yet exported / Exported / Update Required / Error; Export Selected list action; parent-first category export.
+- Case-insensitive per-store name/slug uniqueness; circular and cross-store parents rejected.
+- Coupons resolve category restrictions via `kits.woo.category` (text Woo IDs remain export fallback).
+
+**Migration:** `migrations/20.0.1.23.0/post-migrate.py` — nullable external_id; drop tag name unique; migrate binding assignments via odoo_* links; log unmappable rows.
+
+**Tests:** `tests/test_woo_category_tag_sot.py` plus updated catalog menu/hierarchy assertions.
+
+**Files:** `models/kits_woo_catalog.py`, `models/kits_connector_instance_catalog.py`, `models/kits_woo_product_binding.py`, `models/kits_connector_instance_product.py`, `models/kits_connector_instance_coupon.py`, `views/kits_woo_catalog_views.xml`, `views/kits_woo_binding_views.xml`, migration, tests, `__manifest__.py`, `ai.md`.
+
+### 2026-11-16 — `20.0.1.24.0` Connected Stores Many2many + customer filters
+
+**Change**
+- Replaced the Connectors-tab Char display (`kits_connected_instance_names`) with stored read-only Many2many `res.partner.woo_instance_ids` → `kits.woo.instance` (label **Connected Stores**).
+- Values come only from active `kits.woo.customer.binding` records (one store per active binding; no duplicates; soft-delete clears the store).
+- WooCommerce → Customers: dedicated search view with **Has WooCommerce Store**, **No WooCommerce Store**, and Group By **Connected Store**. Default filter keeps the previous “linked customers” UX; domain is top-level contacts so the No-Store filter works.
+- Customer import/webhook/matching/export rules unchanged.
+
+**Migration:** `migrations/20.0.1.24.0/post-migrate.py` rebuilds `res_partner_woo_instance_rel` from active bindings.
+
+**Tests:** `tests/test_woo_customer_connected_stores.py`
+
+**Files:** `models/res_partner.py`, `models/kits_woo_customer_binding.py`, `views/res_partner_views.xml`, `views/kits_woocommerce_menus.xml`, migration, tests, `__manifest__.py`, `ai.md`.
+
+### 2026-11-16 — `20.0.1.25.0` Customer form sync helpers cleanup
+
+**Change**
+- Removed obsolete customer Fetch/Import server actions from the Contacts Action menu in favour of Sync Operations.
+- Dropped leftover `kits.woo.customer.fetch` model metadata if present.
+
+**Migration:** `migrations/20.0.1.25.0/post-migrate.py`
+
+### 2026-11-16 — `20.0.1.26.0` Per-store product names, descriptions, variant titles
+
+**Architecture**
+- Native `product.template` / `product.product` stay master for shared data; store presentation lives on existing `kits.woo.product.binding` / `kits.woo.variant.binding`.
+- `title`, `description`, `description_short` on product bindings and `title` on variant bindings are `translate=True`; store `lang_id` selects values on import/export.
+- Product binding `external_id` optional until first successful export/import (pending store notes).
+- Export payloads use `_woo_build_product_export_payload` (store title/descriptions, never blank name). Optional `update_groups` for partial updates (`basic_details`, `price`, `images`, `status`, …).
+- WooCommerce REST variations have no independent `name` field — variant titles are store-note only and are not sent as `name` on variation API calls.
+- Import updates the store note only for matched products; warns when overwriting unexported local titles (`sync_state=not_synced`).
+- Prepare on store link / export initializes empty presentation fields without overwriting customs; maps native categories to connector cats (assign only if exported).
+- UI: binding list/form show store vs native names; search; product form **Store Notes** smart button.
+
+**Migration:** `migrations/20.0.1.26.0/post-migrate.py` — nullable product `external_id`; fill empty titles/descriptions/variant titles from native (no overwrite).
+
+**Tests:** `tests/test_woo_store_presentation.py`
+
+**Files:** `models/kits_woo_product_binding.py`, `models/kits_connector_instance.py`, `models/kits_connector_instance_product.py`, `models/product_template.py`, `views/kits_woo_binding_views.xml`, `views/product_template_views.xml`, migration, tests, `__manifest__.py`, `ai.md`.
+
+### 2026-11-16 — `20.0.1.27.0` Slim product binding fields + form redesign
+
+**Change**
+- Removed unused `kits.woo.product.binding` fields: `product_type`, `taxable`, `virtual`, `sku`, `regular_price`, `sale_price`, `variant_count`, `store_create_date`, legacy `category_ids` / `tag_ids`.
+- Product binding form redesigned around store title, native product, descriptions, connector catalog, variants, and sync metadata.
+- Import/export/prepare no longer write the removed snapshot fields.
+
+**Migration:** `migrations/20.0.1.27.0/post-migrate.py`
+
+**Files:** `models/kits_woo_product_binding.py`, `models/kits_connector_instance.py`, `models/kits_connector_instance_product.py`, `views/kits_woo_binding_views.xml`, tests, `__manifest__.py`, `ai.md`.
+
+### 2026-11-16 — `20.0.1.28.0` Automatic catalog prep on product import/export
+
+**Change**
+- Slug-aware `_find` / ensure helpers for categories and tags (same-store only).
+- Export: `_woo_prepare_catalog_for_product_export` once per job (remote sync → export missing **assigned** cats/tags + parents → validate). Store row `FOR UPDATE` lock.
+- Product notes may assign pending same-store cats/tags; invalid assignments never silently omitted from payloads.
+- Tests: `tests/test_woo_catalog_auto_sync.py`.
+
+**Files:** `models/kits_woo_catalog.py`, `models/kits_connector_instance_catalog.py`, `models/kits_connector_instance_product.py`, `models/kits_woo_product_binding.py`, tests, `__manifest__.py`, `ai.md`.
+
+### 2026-11-16 — `20.0.1.29.0` Assigned-only catalog export hardening
+
+**Root cause addressed**
+- Remote category sync could raise unique `external_id` conflicts when a slug-matched pending row collided with another local row that already owned the Woo id (or when `external_id` was the string `"False"`). Incomplete product payloads could also clear category parents.
+
+**Change**
+- `_kits_norm_external_id` + create/write normalization; migration clears bad `external_id` values.
+- Resolve helpers: match by id first; slug/name only when the local row is still pending (never steal another id).
+- Import create: catch `ValidationError`, update the existing owner.
+- Import: preserve `parent_id` when Woo payload omits `parent`.
+- Export prep: re-collect assignments after sync; validate messages include SKU and missing parent/child names.
+- Tests: collision, parent preserve, `"False"` normalization, SKU in validation error.
+
+**Migration:** `migrations/20.0.1.29.0/post-migrate.py`
+
+**Files:** `models/kits_woo_catalog.py`, `models/kits_connector_instance_catalog.py`, `models/kits_connector_instance_product.py`, `tests/test_woo_catalog_auto_sync.py`, migration, `__manifest__.py`, `ai.md`.

@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 {
     'name': 'Kits Odoo WooCommerce Connector',
-    'version': '20.0.1.19.0',
+    'version': '20.0.1.29.0',
     'category': 'Sales/Sales',
     'summary': 'WooCommerce store sync for products, customers, orders, coupons, and inventory',
     'description': """
@@ -40,7 +40,9 @@ Features:
         'views/kits_connector_instance_views.xml',
         'views/kits_woo_webhook_views.xml',
         'views/kits_woo_binding_views.xml',
+        'views/kits_woo_catalog_views.xml',
         'views/kits_woo_customer_waiting_views.xml',
+        'views/kits_woo_product_waiting_views.xml',
         'views/kits_woo_coupon_views.xml',
         'views/kits_woo_refund_views.xml',
         'views/sale_order_views.xml',
@@ -53,6 +55,8 @@ Features:
         'views/res_config_settings_views.xml',
         'views/kits_woocommerce_menus.xml',
         'data/ir_cron_customer_waiting.xml',
+        'data/ir_cron_product_waiting.xml',
+        'data/ir_cron_coupon_waiting.xml',
     ],
     'assets': {
         'web.assets_backend': [

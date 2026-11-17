@@ -88,7 +88,30 @@ class KitsWooCustomerBinding(models.Model):
                 vals['company_id'] = instance.company_id.id
             if vals.get('external_id'):
                 vals['external_id'] = str(vals['external_id'])
-        return super().create(vals_list)
+        bindings = super().create(vals_list)
+        bindings._kits_refresh_partner_connected_stores()
+        return bindings
+
+    def write(self, vals):
+        if vals.get('external_id'):
+            vals = dict(vals, external_id=str(vals['external_id']))
+        partners_before = self.mapped('partner_id')
+        result = super().write(vals)
+        if any(key in vals for key in ('partner_id', 'instance_id', 'active')):
+            (partners_before | self.mapped('partner_id'))._kits_refresh_partner_connected_stores()
+        return result
+
+    def unlink(self):
+        partners = self.mapped('partner_id')
+        result = super().unlink()
+        partners._kits_refresh_partner_connected_stores()
+        return result
+
+    def _kits_refresh_partner_connected_stores(self):
+        """Recompute stored Connected Stores after binding create/update/delete."""
+        partners = self.mapped('partner_id') if self else self.env['res.partner']
+        if partners:
+            partners._kits_refresh_partner_connected_stores()
 
     @api.depends('partner_id', 'external_id', 'instance_id', 'sync_state')
     def _compute_display_name(self):

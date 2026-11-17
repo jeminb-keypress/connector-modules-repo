@@ -568,6 +568,18 @@ WooCommerce `20.0.1.14.8` adds an OWL dashboard that reads `kits.connector.insta
 
 WooCommerce (`kits_odoo_woocommerce_connector` `20.0.1.15.0`) adds platform-specific `kits.woo.customer.waiting` and continues to use `kits.connector.sync.job` for batch processing (`woo_process_customer_waiting`). No base-module schema change.
 
+### 2026-11-13 — Note: WooCommerce product waiting list (no base code change)
+
+WooCommerce (`kits_odoo_woocommerce_connector` `20.0.1.20.0`) adds platform-specific `kits.woo.product.waiting` + `kits.woo.product.field.mapping`, jobs `woo_process_product_waiting` / `woo_process_product_images` / `woo_auto_import_products`, and uses existing product utils / sync jobs. Customer waiting and base schema unchanged.
+
+### 2026-11-14 — Note: Woo attribute terms menu + coupon stale webhooks (no base code change)
+
+WooCommerce (`kits_odoo_woocommerce_connector` `20.0.1.21.0`) adds a Product Attribute Terms menu over generic `kits.connector.binding` (`product.attribute.value`), hardens attribute/term import logging, and skips stale coupon webhook payloads using binding `external_data.date_modified`. Base schema unchanged.
+
 ### 2026-11-04 — Note: Woo live webhook ops (no base code change)
 
 Local live webhook delivery for Woo needs Odoo `dbfilter` (or equivalent) so `/kits_woo/webhook/...` resolves a DB, and WordPress must be allowed to POST to loopback/private Odoo URLs (WP rejects `127.0.0.1`/`localhost` by default). Documented in the Woo `ai.md` changelog; base unchanged.
+
+### 2026-11-16 — Note: Woo assigned-only catalog export (`20.0.1.29.0`, no base code change)
+
+WooCommerce product export prep syncs remote categories/tags then exports only **assigned** cats/tags (+ parents) for the product batch. Safe upsert (id-first, pending-slug, no steal), parent preserve, and validation live entirely in `kits_odoo_woocommerce_connector`. Base jobs/logs/bindings unchanged.

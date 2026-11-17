@@ -96,9 +96,21 @@ class KitsWooInstance(models.Model):
     )
     pricelist_id = fields.Many2one(
         'product.pricelist',
-        string='Pricelist',
+        string='Export Pricelist',
         check_company=True,
         help='Used when exporting product prices to WooCommerce.',
+    )
+    woo_regular_pricelist_id = fields.Many2one(
+        'product.pricelist',
+        string='Main Pricelist (Regular Prices)',
+        check_company=True,
+        help='Receives WooCommerce regular prices when Copy Product Prices is enabled.',
+    )
+    woo_sale_pricelist_id = fields.Many2one(
+        'product.pricelist',
+        string='Sale Pricelist',
+        check_company=True,
+        help='Optional pricelist for WooCommerce sale prices (with sale date range).',
     )
     sales_team_id = fields.Many2one(
         'crm.team',
@@ -106,8 +118,10 @@ class KitsWooInstance(models.Model):
         check_company=True,
     )
     woo_import_images = fields.Boolean(
-        string='Import Product Images',
+        string='Copy Product Images',
         default=True,
+        help='When enabled, product images are queued for a separate image job '
+             '(except order-driven imports, which download immediately).',
     )
     woo_match_by_sku = fields.Boolean(
         string='Match Products by SKU',
@@ -116,20 +130,42 @@ class KitsWooInstance(models.Model):
              'Several matches are logged and the product import fails.',
     )
     woo_create_products = fields.Boolean(
-        string='Create Products Automatically',
-        default=True,
+        string='Automatically Create Products',
+        default=False,
         help='When no Odoo product matches the WooCommerce SKU, create one. '
-             'When this is off, that product import fails and is logged.',
+             'When this is off (default), that product import fails and is logged.',
     )
     woo_sync_price = fields.Boolean(
-        string='Synchronize Prices',
+        string='Copy Product Prices',
         default=True,
-        help='Write WooCommerce prices onto the Odoo product during import.',
+        help='Import WooCommerce regular/sale prices into the configured pricelists.',
     )
     woo_sync_weight = fields.Boolean(
         string='Synchronize Weight',
-        default=False,
-        help='Write WooCommerce weight onto the Odoo product during import.',
+        default=True,
+        help='Convert and write WooCommerce weight onto the Odoo product during import.',
+    )
+    woo_weight_unit = fields.Selection(
+        selection=[
+            ('kg', 'Kilogram (kg)'),
+            ('g', 'Gram (g)'),
+            ('lbs', 'Pound (lbs)'),
+            ('oz', 'Ounce (oz)'),
+        ],
+        string='WooCommerce Weight Unit',
+        default='kg',
+        required=True,
+    )
+    woo_default_product_categ_id = fields.Many2one(
+        'product.category',
+        string='Default Product Category',
+        check_company=True,
+        help='Used when creating Odoo products that have no mapped WooCommerce category.',
+    )
+    woo_product_field_mapping_ids = fields.One2many(
+        'kits.woo.product.field.mapping',
+        'instance_id',
+        string='Product Extra Field Mappings',
     )
     woo_allow_unmapped_order_lines = fields.Boolean(
         string='Allow Unmapped Order Lines',
@@ -159,8 +195,21 @@ class KitsWooInstance(models.Model):
              'under WooCommerce Stores and need sync (new / not synced / error). '
              'Products whose remote binding is Deleted Remote are not recreated.',
     )
+    woo_auto_import_products = fields.Boolean(
+        string='Automatic Daily Product Import',
+        default=False,
+        help='When enabled, a daily job imports products modified since the last '
+             'successful product import checkpoint for this store.',
+    )
     woo_last_product_sync = fields.Datetime(
         string='Products', readonly=True, copy=False,
+    )
+    woo_last_product_import = fields.Datetime(
+        string='Last Successful Product Import',
+        readonly=True,
+        copy=False,
+        help='Checkpoint for incremental automatic product import. Advanced only after '
+             'products were successfully fetched and queued on the waiting list.',
     )
     woo_last_order_sync = fields.Datetime(
         string='Orders', readonly=True, copy=False,
@@ -699,6 +748,8 @@ class KitsWooInstance(models.Model):
             self, odoo_record_id=template.id,
         )
         data = dict(external_data or {})
+        lang = self._woo_store_lang_code()
+        template_l = template.with_context(lang=lang)
         vals = {
             'instance_id': self.id,
             'company_id': self.company_id.id,
@@ -709,27 +760,29 @@ class KitsWooInstance(models.Model):
             'sync_state': 'synced',
             'sync_error': False,
             'sync_date': fields.Datetime.now(),
-            'title': data.get('title') or template.name,
         }
-        product_type = data.get('type') if data.get('type') in (
-            'simple', 'variable', 'grouped', 'external', 'bundle',
-        ) else False
-        if product_type:
-            vals['product_type'] = product_type
-        elif not binding:
-            vals['product_type'] = 'simple'
+        # Never overwrite a customized store title with the native product name.
+        if data.get('title'):
+            vals['title'] = data['title']
+        elif not binding or not (binding.with_context(lang=lang).title or '').strip():
+            vals['title'] = template_l.name
+        write_ctx = {
+            'lang': lang,
+            'kits_woo_skip_presentation_dirty': True,
+            'kits_woo_skip_dirty': True,
+        }
         if binding:
             vals['sync_version'] = binding.sync_version + 1
             if external_data is not None:
                 merged = dict(binding.external_data or {})
                 merged.update(data)
                 vals['external_data'] = merged
-            binding.write(vals)
+            binding.with_context(**write_ctx).write(vals)
             return binding
         vals['sync_version'] = 1
         if external_data is not None:
             vals['external_data'] = data
-        return ProductBinding.create(vals)
+        return ProductBinding.with_context(**write_ctx).create(vals)
 
     def _woo_bind_product_variant(self, variant_id, external_id, external_data=None):
         self.ensure_one()
@@ -749,6 +802,8 @@ class KitsWooInstance(models.Model):
                 {'type': 'variable' if parent_external != external_id else 'simple'},
             )
         data = dict(external_data or {})
+        lang = self._woo_store_lang_code()
+        variant_l = variant.with_context(lang=lang)
         binding = VariantBinding._find(self, external_id=external_id) or VariantBinding._find(
             self, odoo_record_id=variant.id,
         )
@@ -765,18 +820,27 @@ class KitsWooInstance(models.Model):
             'sync_error': False,
             'sync_date': fields.Datetime.now(),
         }
+        if data.get('title'):
+            vals['title'] = data['title']
+        elif not binding or not (binding.with_context(lang=lang).title or '').strip():
+            vals['title'] = variant_l.display_name
+        write_ctx = {
+            'lang': lang,
+            'kits_woo_skip_presentation_dirty': True,
+            'kits_woo_skip_dirty': True,
+        }
         if binding:
             vals['sync_version'] = binding.sync_version + 1
             if external_data is not None:
                 merged = dict(binding.external_data or {})
                 merged.update(data)
                 vals['external_data'] = merged
-            binding.write(vals)
+            binding.with_context(**write_ctx).write(vals)
             return binding
         vals['sync_version'] = 1
         if external_data is not None:
             vals['external_data'] = data
-        return VariantBinding.create(vals)
+        return VariantBinding.with_context(**write_ctx).create(vals)
 
     @staticmethod
     def _woo_normalize_remote_datetime(value):

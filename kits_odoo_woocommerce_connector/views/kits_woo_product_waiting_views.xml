@@ -1,0 +1,124 @@
+<?xml version="1.0" encoding="utf-8"?>
+<odoo>
+    <record id="kits_woo_product_waiting_view_list" model="ir.ui.view">
+        <field name="name">kits.woo.product.waiting.list</field>
+        <field name="model">kits.woo.product.waiting</field>
+        <field name="arch" type="xml">
+            <list>
+                <field name="instance_id"/>
+                <field name="external_id"/>
+                <field name="product_name"/>
+                <field name="source"/>
+                <field name="event_type"/>
+                <field name="state" widget="badge"/>
+                <field name="image_state" widget="badge"/>
+                <field name="attempt_count"/>
+                <field name="event_timestamp"/>
+                <field name="processed_at"/>
+                <field name="product_tmpl_id" optional="hide"/>
+                <field name="last_error" optional="hide"/>
+            </list>
+        </field>
+    </record>
+
+    <record id="kits_woo_product_waiting_view_form" model="ir.ui.view">
+        <field name="name">kits.woo.product.waiting.form</field>
+        <field name="model">kits.woo.product.waiting</field>
+        <field name="arch" type="xml">
+            <form>
+                <header>
+                    <button name="action_process_selected" type="object" string="Process"
+                            class="btn-primary"
+                            invisible="state not in ('draft', 'failed')"/>
+                    <button name="action_retry_failed" type="object" string="Retry"
+                            invisible="state != 'failed'"/>
+                    <button name="action_cancel" type="object" string="Cancel"
+                            invisible="state not in ('draft', 'failed')"/>
+                    <button name="action_open_product" type="object" string="View Product"
+                            invisible="not product_tmpl_id"/>
+                    <button name="action_open_store" type="object" string="View Store"/>
+                    <field name="state" widget="statusbar"
+                           statusbar_visible="draft,processing,done,failed,cancelled"/>
+                </header>
+                <sheet>
+                    <group>
+                        <group>
+                            <field name="instance_id"/>
+                            <field name="external_id"/>
+                            <field name="product_name"/>
+                            <field name="product_tmpl_id"/>
+                        </group>
+                        <group>
+                            <field name="source"/>
+                            <field name="event_type"/>
+                            <field name="image_state"/>
+                            <field name="attempt_count"/>
+                            <field name="max_attempts"/>
+                            <field name="event_timestamp"/>
+                            <field name="processed_at"/>
+                            <field name="company_id" groups="base.group_multi_company"/>
+                        </group>
+                    </group>
+                    <group string="Error Details" invisible="not last_error">
+                        <field name="last_error" nolabel="1" colspan="2"/>
+                    </group>
+                    <group string="Payload" groups="kits_odoo_base_connector.group_kits_connector_manager">
+                        <field name="payload" nolabel="1" colspan="2" widget="json"/>
+                    </group>
+                </sheet>
+            </form>
+        </field>
+    </record>
+
+    <record id="kits_woo_product_waiting_view_search" model="ir.ui.view">
+        <field name="name">kits.woo.product.waiting.search</field>
+        <field name="model">kits.woo.product.waiting</field>
+        <field name="arch" type="xml">
+            <search>
+                <field name="external_id"/>
+                <field name="product_name"/>
+                <field name="instance_id"/>
+                <field name="product_tmpl_id"/>
+                <filter name="filter_draft" string="Draft" domain="[('state', '=', 'draft')]"/>
+                <filter name="filter_processing" string="Processing" domain="[('state', '=', 'processing')]"/>
+                <filter name="filter_done" string="Done" domain="[('state', '=', 'done')]"/>
+                <filter name="filter_failed" string="Failed" domain="[('state', '=', 'failed')]"/>
+                <filter name="filter_cancelled" string="Cancelled" domain="[('state', '=', 'cancelled')]"/>
+                <filter name="filter_images_pending" string="Images Pending"
+                        domain="[('image_state', '=', 'pending')]"/>
+                <separator/>
+                <filter name="filter_bulk" string="Bulk Import" domain="[('source', '=', 'bulk_import')]"/>
+                <filter name="filter_webhook" string="Webhook" domain="[('source', '=', 'webhook')]"/>
+                <filter name="filter_order" string="Order" domain="[('source', '=', 'order')]"/>
+                <filter name="filter_scheduled" string="Scheduled" domain="[('source', '=', 'scheduled')]"/>
+                <group>
+                    <filter name="group_state" string="Status" context="{'group_by': 'state'}"/>
+                    <filter name="group_store" string="Store" context="{'group_by': 'instance_id'}"/>
+                    <filter name="group_source" string="Source" context="{'group_by': 'source'}"/>
+                </group>
+            </search>
+        </field>
+    </record>
+
+    <record id="kits_woo_product_waiting_action" model="ir.actions.act_window">
+        <field name="name">Product Waiting List</field>
+        <field name="res_model">kits.woo.product.waiting</field>
+        <field name="view_mode">list,form</field>
+        <field name="context">{'search_default_filter_draft': 1}</field>
+    </record>
+
+    <record id="kits_woo_product_field_mapping_view_list" model="ir.ui.view">
+        <field name="name">kits.woo.product.field.mapping.list</field>
+        <field name="model">kits.woo.product.field.mapping</field>
+        <field name="arch" type="xml">
+            <list editable="bottom">
+                <field name="sequence" widget="handle"/>
+                <field name="woo_source"/>
+                <field name="woo_field"/>
+                <field name="odoo_model"/>
+                <field name="odoo_field"/>
+                <field name="active"/>
+            </list>
+        </field>
+    </record>
+</odoo>

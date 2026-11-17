@@ -15,6 +15,10 @@
                             invisible="operation != 'import_specific_products'"
                             required="operation == 'import_specific_products'"
                             placeholder="111,222,333"/>
+                    <field name="customer_id_text"
+                            invisible="operation != 'import_specific_customers'"
+                            required="operation == 'import_specific_customers'"
+                            placeholder="e.g. 42"/>
                     <field name="date_from"
                             invisible="operation not in ('import_unshipped_orders', 'import_shipped_orders')"/>
                     <field name="date_to"
@@ -52,42 +56,11 @@
                     <field name="company_id" invisible="1"/>
                     <field name="template_ids" widget="many2many_tags" readonly="1"
                              invisible="not template_ids"/>
-                    <field name="partner_ids" widget="many2many_tags" readonly="1"
-                             invisible="not partner_ids"/>
                 </group>
                 <footer>
                     <button name="action_confirm"
                             type="object"
                             string="Continue"
-                            class="btn-primary"
-                            groups="kits_odoo_base_connector.group_kits_connector_manager"/>
-                    <button string="Cancel" special="cancel"/>
-                </footer>
-            </form>
-        </field>
-    </record>
-
-    <record id="kits_woo_customer_fetch_view_form" model="ir.ui.view">
-        <field name="name">kits.woo.customer.fetch.form</field>
-        <field name="model">kits.woo.customer.fetch</field>
-        <field name="arch" type="xml">
-            <form string="Fetch Customer from WooCommerce">
-                <div class="alert alert-info" role="status">
-                    Fetch imports one WooCommerce customer (role "customer" only).
-                    Matching order: existing store binding → one contact with the same
-                    email → create a new contact. Multiple email matches are not merged.
-                    Name, email, and phone on an existing contact are never overwritten.
-                </div>
-                <group>
-                    <field name="instance_id"/>
-                    <field name="company_id" groups="base.group_multi_company"/>
-                    <field name="woo_customer_id" placeholder="e.g. 42"/>
-                    <field name="source_partner_id" invisible="1"/>
-                </group>
-                <footer>
-                    <button name="action_fetch"
-                            type="object"
-                            string="Fetch"
                             class="btn-primary"
                             groups="kits_odoo_base_connector.group_kits_connector_manager"/>
                     <button string="Cancel" special="cancel"/>

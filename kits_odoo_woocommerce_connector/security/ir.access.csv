@@ -3,7 +3,6 @@ access_kits_woo_instance_user,kits.woo.instance user,kits.woo.instance,kits_odoo
 access_kits_woo_instance_manager,kits.woo.instance manager,kits.woo.instance,kits_odoo_base_connector.group_kits_connector_manager,crud,"[('company_id', 'in', company_ids)]"
 access_kits_woo_sync_wizard_manager,kits.woo.sync.wizard manager,kits.woo.sync.wizard,kits_odoo_base_connector.group_kits_connector_manager,crud,
 access_kits_woo_instance_picker_manager,kits.woo.instance.picker manager,kits.woo.instance.picker,kits_odoo_base_connector.group_kits_connector_manager,crud,
-access_kits_woo_customer_fetch_manager,kits.woo.customer.fetch manager,kits.woo.customer.fetch,kits_odoo_base_connector.group_kits_connector_manager,crud,
 access_kits_woo_wp_media_credentials_manager,kits.woo.wp.media.credentials manager,kits.woo.wp.media.credentials,kits_odoo_base_connector.group_kits_connector_manager,crud,
 access_kits_woo_coupon_user,kits.woo.coupon user,kits.woo.coupon,kits_odoo_base_connector.group_kits_connector_user,r,"['|', ('company_id', '=', False), ('company_id', 'in', company_ids)]"
 access_kits_woo_coupon_manager,kits.woo.coupon manager,kits.woo.coupon,kits_odoo_base_connector.group_kits_connector_manager,crud,"['|', ('company_id', '=', False), ('company_id', 'in', company_ids)]"
@@ -19,9 +18,23 @@ access_kits_woo_customer_binding_user,kits.woo.customer.binding user,kits.woo.cu
 access_kits_woo_customer_binding_manager,kits.woo.customer.binding manager,kits.woo.customer.binding,kits_odoo_base_connector.group_kits_connector_manager,crud,"['|', ('company_id', '=', False), ('company_id', 'in', company_ids)]"
 access_kits_woo_customer_waiting_user,kits.woo.customer.waiting user,kits.woo.customer.waiting,kits_odoo_base_connector.group_kits_connector_user,r,"['|', ('company_id', '=', False), ('company_id', 'in', company_ids)]"
 access_kits_woo_customer_waiting_manager,kits.woo.customer.waiting manager,kits.woo.customer.waiting,kits_odoo_base_connector.group_kits_connector_manager,crud,"['|', ('company_id', '=', False), ('company_id', 'in', company_ids)]"
+access_kits_woo_product_waiting_user,kits.woo.product.waiting user,kits.woo.product.waiting,kits_odoo_base_connector.group_kits_connector_user,r,"['|', ('company_id', '=', False), ('company_id', 'in', company_ids)]"
+access_kits_woo_product_waiting_manager,kits.woo.product.waiting manager,kits.woo.product.waiting,kits_odoo_base_connector.group_kits_connector_manager,crud,"['|', ('company_id', '=', False), ('company_id', 'in', company_ids)]"
+access_kits_woo_product_field_mapping_user,kits.woo.product.field.mapping user,kits.woo.product.field.mapping,kits_odoo_base_connector.group_kits_connector_user,r,"['|', ('company_id', '=', False), ('company_id', 'in', company_ids)]"
+access_kits_woo_product_field_mapping_manager,kits.woo.product.field.mapping manager,kits.woo.product.field.mapping,kits_odoo_base_connector.group_kits_connector_manager,crud,"['|', ('company_id', '=', False), ('company_id', 'in', company_ids)]"
 access_kits_woo_product_binding_user,kits.woo.product.binding user,kits.woo.product.binding,kits_odoo_base_connector.group_kits_connector_user,r,"['|', ('company_id', '=', False), ('company_id', 'in', company_ids)]"
 access_kits_woo_product_binding_manager,kits.woo.product.binding manager,kits.woo.product.binding,kits_odoo_base_connector.group_kits_connector_manager,crud,"['|', ('company_id', '=', False), ('company_id', 'in', company_ids)]"
 access_kits_woo_variant_binding_user,kits.woo.variant.binding user,kits.woo.variant.binding,kits_odoo_base_connector.group_kits_connector_user,r,"['|', ('company_id', '=', False), ('company_id', 'in', company_ids)]"
 access_kits_woo_variant_binding_manager,kits.woo.variant.binding manager,kits.woo.variant.binding,kits_odoo_base_connector.group_kits_connector_manager,crud,"['|', ('company_id', '=', False), ('company_id', 'in', company_ids)]"
+access_kits_woo_category_user,kits.woo.category user,kits.woo.category,kits_odoo_base_connector.group_kits_connector_user,r,"['|', ('company_id', '=', False), ('company_id', 'in', company_ids)]"
+access_kits_woo_category_manager,kits.woo.category manager,kits.woo.category,kits_odoo_base_connector.group_kits_connector_manager,crud,"['|', ('company_id', '=', False), ('company_id', 'in', company_ids)]"
+access_kits_woo_tag_user,kits.woo.tag user,kits.woo.tag,kits_odoo_base_connector.group_kits_connector_user,r,"['|', ('company_id', '=', False), ('company_id', 'in', company_ids)]"
+access_kits_woo_tag_manager,kits.woo.tag manager,kits.woo.tag,kits_odoo_base_connector.group_kits_connector_manager,crud,"['|', ('company_id', '=', False), ('company_id', 'in', company_ids)]"
+access_kits_woo_attribute_user,kits.woo.attribute user,kits.woo.attribute,kits_odoo_base_connector.group_kits_connector_user,r,"['|', ('company_id', '=', False), ('company_id', 'in', company_ids)]"
+access_kits_woo_attribute_manager,kits.woo.attribute manager,kits.woo.attribute,kits_odoo_base_connector.group_kits_connector_manager,crud,"['|', ('company_id', '=', False), ('company_id', 'in', company_ids)]"
+access_kits_woo_attribute_term_user,kits.woo.attribute.term user,kits.woo.attribute.term,kits_odoo_base_connector.group_kits_connector_user,r,"['|', ('company_id', '=', False), ('company_id', 'in', company_ids)]"
+access_kits_woo_attribute_term_manager,kits.woo.attribute.term manager,kits.woo.attribute.term,kits_odoo_base_connector.group_kits_connector_manager,crud,"['|', ('company_id', '=', False), ('company_id', 'in', company_ids)]"
+access_kits_woo_coupon_waiting_user,kits.woo.coupon.waiting user,kits.woo.coupon.waiting,kits_odoo_base_connector.group_kits_connector_user,r,"['|', ('company_id', '=', False), ('company_id', 'in', company_ids)]"
+access_kits_woo_coupon_waiting_manager,kits.woo.coupon.waiting manager,kits.woo.coupon.waiting,kits_odoo_base_connector.group_kits_connector_manager,crud,"['|', ('company_id', '=', False), ('company_id', 'in', company_ids)]"
 access_kits_woo_webhook_user,kits.woo.webhook user,kits.woo.webhook,kits_odoo_base_connector.group_kits_connector_user,r,"['|', ('company_id', '=', False), ('company_id', 'in', company_ids)]"
 access_kits_woo_webhook_manager,kits.woo.webhook manager,kits.woo.webhook,kits_odoo_base_connector.group_kits_connector_manager,crud,"['|', ('company_id', '=', False), ('company_id', 'in', company_ids)]"

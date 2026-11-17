@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 from odoo import api, fields, models
-from odoo.exceptions import UserError
+from odoo.exceptions import UserError, ValidationError
 
 # Fields that affect the WooCommerce product payload (template level).
 _WOO_MAPPED_TEMPLATE_FIELDS = frozenset({
@@ -29,8 +29,14 @@ class ProductTemplate(models.Model):
         'product_tmpl_id',
         'instance_id',
         string='WooCommerce Stores',
-        domain="[('platform_type', '=', 'woocommerce'), ('active', '=', True)]",
-        check_company=True,
+        # Do not use check_company=True: shared products (company_id empty) get
+        # domain company_id=False and then no store appears (stores always have a company).
+        domain=(
+            "[('platform_type', '=', 'woocommerce'), ('active', '=', True), "
+            "'|', ('company_id', '=', False), "
+            "'|', ('company_id', '=', company_id), "
+            "('company_id', 'in', allowed_company_ids)]"
+        ),
         copy=False,
         help='Product is exported only to these WooCommerce stores '
              '(manual export, store Export Products, and auto export cron).',
@@ -100,6 +106,22 @@ class ProductTemplate(models.Model):
             else:
                 template.woo_sync_state = 'mixed'
 
+    @api.constrains('woo_instance_ids', 'company_id')
+    def _check_woo_instance_company(self):
+        for template in self:
+            if not template.company_id:
+                continue
+            mismatched = template.woo_instance_ids.filtered(
+                lambda inst: inst.company_id and inst.company_id != template.company_id
+            )
+            if mismatched:
+                raise ValidationError(self.env._(
+                    'WooCommerce store(s) %(stores)s belong to another company than '
+                    'product "%(product)s".',
+                    stores=', '.join(mismatched.mapped('display_name')),
+                    product=template.display_name,
+                ))
+
     @api.depends('woo_instance_ids')
     def _compute_woo_sync_to_store(self):
         for template in self:
@@ -121,6 +143,12 @@ class ProductTemplate(models.Model):
         res = super().write(vals)
         if self.env.context.get('kits_woo_skip_dirty'):
             return res
+        if 'woo_instance_ids' in vals:
+            for template in self:
+                for instance in template.woo_instance_ids.filtered(
+                    lambda store: store.active and store.platform_type == 'woocommerce'
+                ):
+                    instance._woo_prepare_product_binding_for_store(template)
         dirty_keys = _WOO_MAPPED_TEMPLATE_FIELDS.intersection(vals)
         if dirty_keys or 'woo_instance_ids' in vals:
             bindings = self.env['kits.woo.product.binding'].search([
@@ -153,10 +181,14 @@ class ProductTemplate(models.Model):
         return super().unlink()
 
     def _woo_get_instances_for_company(self):
+        """Active stores for this product's company, or the user's allowed companies."""
+        companies = self.company_id if len(self) == 1 and self.company_id else self.env.companies
         return self.env['kits.woo.instance'].search([
             ('platform_type', '=', 'woocommerce'),
             ('active', '=', True),
-            ('company_id', 'in', [False, self.env.company.id]),
+            '|',
+            ('company_id', '=', False),
+            ('company_id', 'in', companies.ids),
         ])
 
     def _woo_resolve_instance(self, instance=None):
@@ -228,12 +260,30 @@ class ProductTemplate(models.Model):
             },
         }
 
+    def action_open_woo_product_bindings(self):
+        """Open store-specific product notes for this native product."""
+        self.ensure_one()
+        return {
+            'type': 'ir.actions.act_window',
+            'name': self.env._('WooCommerce Store Notes'),
+            'res_model': 'kits.woo.product.binding',
+            'view_mode': 'list,form',
+            'domain': [('product_tmpl_id', '=', self.id)],
+            'context': {
+                'active_test': False,
+                'default_product_tmpl_id': self.id,
+                'create': False,
+            },
+        }
+
     def _woo_enqueue_export(self, instance):
         instance._ensure_woo_ready()
         # Ensure this store is selected on the products being exported.
         to_link = self.filtered(lambda t: instance not in t.woo_instance_ids)
         if to_link:
             to_link.write({'woo_instance_ids': [(4, instance.id)]})
+        for template in self:
+            instance._woo_prepare_product_binding_for_store(template)
         bindings = self.env['kits.woo.product.binding'].with_context(active_test=False).search([
             ('instance_id', '=', instance.id),
             ('product_tmpl_id', 'in', self.ids),
@@ -270,7 +320,7 @@ class ProductTemplate(models.Model):
             binding = self.env['kits.woo.product.binding']._find(
                 instance, odoo_record_id=template.id,
             )
-            if not binding:
+            if not binding or not binding._kits_has_remote_id():
                 missing.append(template.display_name)
                 continue
             woo_ids.append(int(binding.external_id))

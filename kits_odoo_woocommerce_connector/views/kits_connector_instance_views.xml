@@ -187,10 +187,14 @@
                     <group>
                         <group string="Catalog &amp; Pricing">
                             <field name="pricelist_id"/>
+                            <field name="woo_regular_pricelist_id"/>
+                            <field name="woo_sale_pricelist_id"/>
                             <field name="sales_team_id"/>
                             <field name="woo_import_images"/>
                             <field name="woo_sync_price"/>
                             <field name="woo_sync_weight"/>
+                            <field name="woo_weight_unit"/>
+                            <field name="woo_default_product_categ_id"/>
                             <field name="woo_create_products"/>
                             <field name="woo_match_by_sku"/>
                         </group>
@@ -199,9 +203,22 @@
                             <field name="woo_order_statuses"/>
                             <field name="kits_auto_confirm_order"/>
                             <field name="woo_auto_import_orders"/>
+                            <field name="woo_auto_import_products"/>
                             <field name="woo_auto_export_products"/>
                             <field name="woo_auto_export_stock"/>
                         </group>
+                    </group>
+                    <group string="Extra Field Mapping" name="woo_product_field_mapping">
+                        <field name="woo_product_field_mapping_ids" nolabel="1" colspan="2">
+                            <list editable="bottom">
+                                <field name="sequence" widget="handle"/>
+                                <field name="woo_source"/>
+                                <field name="woo_field"/>
+                                <field name="odoo_model"/>
+                                <field name="odoo_field"/>
+                                <field name="active"/>
+                            </list>
+                        </field>
                     </group>
                 </page>
                 <page string="WooCommerce Sync Status"
@@ -210,6 +227,7 @@
                     <group col="2">
                         <group string="Last Sync" name="woo_status_last_sync">
                             <field name="woo_last_product_sync"/>
+                            <field name="woo_last_product_import"/>
                             <field name="woo_last_customer_sync"/>
                             <field name="woo_last_order_sync"/>
                             <field name="woo_last_stock_sync"/>

@@ -1,9 +1,15 @@
 # -*- coding: utf-8 -*-
 from . import test_woo_product_sync
+from . import test_woo_store_presentation
+from . import test_woo_product_waiting
 from . import test_woo_customer_sync
+from . import test_woo_customer_connected_stores
 from . import test_woo_customer_waiting
 from . import test_woo_customer_webhook
 from . import test_woo_catalog_coupon_webhook
+from . import test_woo_catalog_menus
+from . import test_woo_category_tag_sot
+from . import test_woo_catalog_auto_sync
 from . import test_woo_tax_coupon_refund_webhook
 from . import test_woo_webhook_management
 from . import test_woo_public_webhook_url

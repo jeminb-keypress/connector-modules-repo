@@ -49,7 +49,7 @@ class TestWooDashboard(WooConnectorCommon):
             'company_id': self.company.id,
             'product_tmpl_id': template.id,
             'external_id': 'dash-prod-1',
-            'product_type': 'simple',
+            'title': 'Dash Product',
         })
         order = self.env['sale.order'].create({
             'partner_id': partner.id,
@@ -112,7 +112,7 @@ class TestWooDashboard(WooConnectorCommon):
                 'company_id': self.company.id,
                 'product_tmpl_id': template.id,
                 'external_id': ext,
-                'product_type': 'simple',
+                'title': 'Shared Dash Product',
             })
         data = self.env['kits.woo.instance'].get_woo_dashboard_data('last_30')
         # At least the shared template counted once, not twice

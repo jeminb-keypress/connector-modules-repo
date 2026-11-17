@@ -1,11 +1,35 @@
 # -*- coding: utf-8 -*-
-from odoo import fields, models
-from odoo.exceptions import UserError
+from odoo import api, fields, models
 
 
 class ResPartner(models.Model):
     _inherit = 'res.partner'
 
+    # Base Char keeps a display-only name list; rename its label so the Woo
+    # Many2many owns the "Connected Stores" string without a field-label clash.
+    kits_connected_instance_names = fields.Char(
+        string='Connected Store Names',
+    )
+    woo_customer_binding_ids = fields.One2many(
+        'kits.woo.customer.binding',
+        'partner_id',
+        string='WooCommerce Customer Bindings',
+        help='Technical inverse of kits.woo.customer.binding. Used to keep '
+             'Connected Stores (woo_instance_ids) in sync with bindings.',
+    )
+    woo_instance_ids = fields.Many2many(
+        'kits.woo.instance',
+        'res_partner_woo_instance_rel',
+        'partner_id',
+        'instance_id',
+        string='Connected Stores',
+        compute='_compute_woo_instance_ids',
+        store=True,
+        readonly=True,
+        copy=False,
+        help='WooCommerce stores linked to this contact through active customer '
+             'bindings. Derived from kits.woo.customer.binding; not edited manually.',
+    )
     woo_is_store_customer = fields.Boolean(
         string='WooCommerce Customer',
         compute='_compute_woo_sync_info',
@@ -38,6 +62,31 @@ class ResPartner(models.Model):
              'When every binding is soft-deleted remotely, status is Deleted Remotely '
              '(not Not Linked).',
     )
+
+    @api.depends(
+        'woo_customer_binding_ids.instance_id',
+        'woo_customer_binding_ids.active',
+        'woo_customer_binding_ids.partner_id',
+    )
+    def _compute_woo_instance_ids(self):
+        """Connected Stores = distinct stores from active customer bindings only."""
+        Binding = self.env['kits.woo.customer.binding']
+        for partner in self:
+            if not partner.id:
+                partner.woo_instance_ids = Binding.env['kits.woo.instance']
+                continue
+            # One2many excludes inactive by default; search active bindings explicitly
+            # so soft-deleted bindings never leave a stale store link.
+            instances = Binding.search([
+                ('partner_id', '=', partner.id),
+                ('active', '=', True),
+            ]).mapped('instance_id')
+            partner.woo_instance_ids = instances
+
+    def _kits_refresh_partner_connected_stores(self):
+        """Force store recompute after customer binding create/write/unlink."""
+        self.invalidate_recordset(['woo_instance_ids', 'woo_customer_binding_ids'])
+        self._compute_woo_instance_ids()
 
     def _compute_woo_sync_info(self):
         Binding = self.env['kits.woo.customer.binding'].with_context(active_test=False)
@@ -132,119 +181,3 @@ class ResPartner(models.Model):
             bindings.unlink()
         return super().unlink()
 
-    def _woo_get_instances_for_company(self):
-        return self.env['kits.woo.instance'].search([
-            ('platform_type', '=', 'woocommerce'),
-            ('active', '=', True),
-            ('company_id', '=', self.env.company.id),
-        ])
-
-    def _woo_resolve_instance(self, instance=None):
-        if instance:
-            return instance
-        instances = self._woo_get_instances_for_company()
-        if not instances:
-            raise UserError(self.env._(
-                'No active WooCommerce store exists for the current company.'
-            ))
-        if len(instances) > 1:
-            return False
-        return instances
-
-    def _check_woo_sync_access(self):
-        if not self.env.user.has_group(
-            'kits_odoo_base_connector.group_kits_connector_manager'
-        ):
-            raise UserError(self.env._(
-                'Only Connector Administrators can synchronize WooCommerce customers.'
-            ))
-
-    def action_woo_fetch_customer(self):
-        """Open Fetch Customer wizard (import by WooCommerce customer ID)."""
-        self._check_woo_sync_access()
-        self.ensure_one()
-        default_instance = self._woo_resolve_instance() or self.env['kits.woo.instance']
-        default_woo_id = False
-        if default_instance:
-            binding = self.env['kits.woo.customer.binding']._find(
-                default_instance, odoo_record_id=self.id,
-            )
-            if binding:
-                default_woo_id = binding.external_id
-        return {
-            'type': 'ir.actions.act_window',
-            'name': self.env._('Fetch Customer from WooCommerce'),
-            'res_model': 'kits.woo.customer.fetch',
-            'view_mode': 'form',
-            'target': 'new',
-            'context': {
-                'default_source_partner_id': self.id,
-                'default_instance_id': default_instance.id if default_instance else False,
-                'default_woo_customer_id': default_woo_id,
-            },
-        }
-
-    def action_woo_import_from_store(self):
-        """Pull already-linked customers from WooCommerce into Odoo."""
-        self._check_woo_sync_access()
-        commercial = self.filtered(lambda p: not p.parent_id)
-        if not commercial:
-            raise UserError(self.env._(
-                'Select top-level contacts (not invoice/delivery address children).'
-            ))
-        instance = commercial._woo_resolve_instance()
-        if not instance:
-            return commercial._woo_open_instance_picker('import')
-        return commercial._woo_enqueue_import(instance)
-
-    def _woo_open_instance_picker(self, operation):
-        return {
-            'type': 'ir.actions.act_window',
-            'name': self.env._('Choose WooCommerce Store'),
-            'res_model': 'kits.woo.instance.picker',
-            'view_mode': 'form',
-            'target': 'new',
-            'context': {
-                'default_operation': operation,
-                'default_partner_ids': [(6, 0, self.ids)],
-            },
-        }
-
-    def _woo_enqueue_import(self, instance):
-        instance._ensure_woo_ready()
-        Binding = self.env['kits.woo.customer.binding']
-        woo_ids = []
-        missing = []
-        for partner in self:
-            binding = Binding._find(instance, odoo_record_id=partner.id)
-            if not binding:
-                missing.append(partner.display_name)
-                continue
-            woo_ids.append(int(binding.external_id))
-        if missing and not woo_ids:
-            raise UserError(self.env._(
-                'None of the selected contacts are linked to %(store)s. '
-                'Use Fetch Customer or import them from the store first.',
-                store=instance.name,
-            ))
-        instance.action_create_sync_job(
-            'woo_import_customers',
-            name=self.env._(
-                'WooCommerce: Import Customers (%(store)s) — %(count)s selected',
-                store=instance.name,
-                count=len(woo_ids),
-            ),
-            payload={'woo_ids': woo_ids},
-        )
-        message = self.env._(
-            'Queued update of %(count)s linked customer(s) from %(store)s.',
-            count=len(woo_ids),
-            store=instance.name,
-        )
-        if missing:
-            message = self.env._(
-                '%(message)s Skipped %(skipped)s unlinked contact(s).',
-                message=message,
-                skipped=len(missing),
-            )
-        return instance._woo_notify(message)

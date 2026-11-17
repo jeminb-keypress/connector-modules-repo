@@ -47,6 +47,14 @@
                         <span class="o_stat_text">WooCommerce</span>
                     </div>
                 </button>
+                <button name="action_open_woo_product_bindings"
+                        type="object"
+                        class="oe_stat_button"
+                        icon="storefront"
+                        groups="kits_odoo_base_connector.group_kits_connector_user"
+                        invisible="woo_binding_count == 0">
+                    <field name="woo_binding_count" widget="statinfo" string="Store Notes"/>
+                </button>
             </xpath>
             <xpath expr="//span[@name='sale_option']" position="after">
                 <span class="d-inline-flex">

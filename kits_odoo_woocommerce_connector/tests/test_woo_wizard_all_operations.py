@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""Matrix coverage for all 20 Sync Operation wizard operations (mocked Woo API)."""
+"""Matrix coverage for all Sync Operation wizard operations (mocked Woo API)."""
 from unittest.mock import MagicMock
 
 from odoo import fields
@@ -13,6 +13,7 @@ from .common import WooConnectorCommon
 
 WIZARD_OPERATIONS = [
     'import_customers',
+    'import_specific_customers',
     'import_products',
     'import_specific_products',
     'import_unshipped_orders',
@@ -121,12 +122,12 @@ class TestWooWizardAllOperations(WooConnectorCommon):
             'payment_method_title': '',
         }
 
-    def test_wizard_exposes_exactly_twenty_operations(self):
+    def test_wizard_exposes_expected_operations(self):
         selection = [
             item[0] for item in self.env['kits.woo.sync.wizard']._fields['operation'].selection
         ]
         self.assertEqual(selection, WIZARD_OPERATIONS)
-        self.assertEqual(len(selection), 20)
+        self.assertEqual(len(selection), 21)
         self.assertNotIn('import_stock', selection)
         self.assertNotIn('export_customers', selection)
         self.assertNotIn('direction', self.env['kits.woo.sync.wizard']._fields)
@@ -145,6 +146,10 @@ class TestWooWizardAllOperations(WooConnectorCommon):
     def test_all_queued_operations_create_expected_jobs(self):
         expected = {
             'import_customers': ('woo_import_customers', {}),
+            'import_specific_customers': (
+                'woo_import_customers',
+                {'woo_ids': [42]},
+            ),
             'import_products': ('woo_import_products', {}),
             'import_specific_products': (
                 'woo_import_products',
@@ -172,6 +177,8 @@ class TestWooWizardAllOperations(WooConnectorCommon):
         }
         for operation, (job_type, payload) in expected.items():
             vals = {}
+            if operation == 'import_specific_customers':
+                vals['customer_id_text'] = '42'
             if operation == 'import_specific_products':
                 vals['product_ids_text'] = '11,12'
             if operation == 'import_specific_orders':
@@ -191,6 +198,10 @@ class TestWooWizardAllOperations(WooConnectorCommon):
     def test_wizard_validation_edge_cases(self):
         with self.assertRaises(ValidationError):
             self._wizard('import_specific_products', product_ids_text='')
+        with self.assertRaises(ValidationError):
+            self._wizard('import_specific_customers', customer_id_text='')
+        with self.assertRaises(ValidationError):
+            self._wizard('import_specific_customers', customer_id_text='1,2')
         with self.assertRaises(ValidationError):
             self._wizard('import_specific_orders', order_ids_text='abc')
         with self.assertRaises(ValidationError):
@@ -417,26 +428,46 @@ class TestWooWizardAllOperations(WooConnectorCommon):
             },
         ])
         with self._patch_api(api):
+            api.get_categories.side_effect = None
+            api.get_tags.side_effect = None
+            api.get_attributes.side_effect = None
+            api.get_attribute_terms.side_effect = None
+            api.get_categories.return_value = iter([
+                {'id': 1, 'name': 'Parent Cat', 'parent': 0, 'slug': 'parent-cat'},
+                {'id': 2, 'name': 'Child Cat', 'parent': 1, 'slug': 'child-cat'},
+                {'id': 3, 'name': '', 'parent': 0, 'slug': 'bad'},
+            ])
+            api.get_tags.return_value = iter([
+                {'id': 8, 'name': 'Tag A', 'slug': 'tag-a'},
+            ])
+            api.get_attributes.return_value = iter([
+                {'id': 3, 'name': 'Color', 'slug': 'color'},
+            ])
+            api.get_attribute_terms.return_value = iter([
+                {'id': 30, 'name': 'Red'},
+                {'id': 31, 'name': ''},
+            ])
             cat_summary = self.instance._woo_import_categories()
             self.instance._woo_import_tags()
             self.instance._woo_import_attributes()
             self.instance._woo_import_coupons()
+            api.get_categories.return_value = iter([
+                {'id': 1, 'name': 'Parent Cat', 'parent': 0, 'slug': 'parent-cat'},
+                {'id': 2, 'name': 'Child Cat', 'parent': 1, 'slug': 'child-cat'},
+                {'id': 3, 'name': '', 'parent': 0, 'slug': 'bad'},
+            ])
+            api.get_tags.return_value = iter([
+                {'id': 8, 'name': 'Tag A', 'slug': 'tag-a'},
+            ])
             self.instance._woo_import_categories()
             self.instance._woo_import_tags()
             self.instance._woo_import_coupons()
         self.assertIn('failed=', cat_summary)
-        parent = self.instance._woo_find_odoo('product.category', 1)
-        child = self.instance._woo_find_odoo('product.category', 2)
+        parent = self.env['kits.woo.category']._find(self.instance, external_id='1')
+        child = self.env['kits.woo.category']._find(self.instance, external_id='2')
         self.assertTrue(parent)
         self.assertEqual(child.parent_id, parent)
-        self.assertEqual(
-            self.env['kits.connector.binding'].search_count([
-                ('instance_id', '=', self.instance._kits_instance_ref()),
-                ('odoo_model', '=', 'product.tag'),
-                ('external_id', '=', '8'),
-            ]),
-            1,
-        )
+        self.assertTrue(self.env['kits.woo.tag']._find(self.instance, external_id='8'))
         self.assertTrue(self.instance._woo_find_odoo('product.attribute', 3))
         self.assertEqual(
             self.env['kits.woo.coupon'].search_count([
@@ -576,8 +607,16 @@ class TestWooWizardAllOperations(WooConnectorCommon):
         self.assertEqual(binding.sync_state, 'deleted')
 
     def test_15_16_17_18_19_20_export_update_modes(self):
-        category = self.env['product.category'].create({'name': 'Export Cat'})
-        tag = self.env['product.tag'].create({'name': 'Export Tag'})
+        category = self.env['kits.woo.category'].create({
+            'instance_id': self.instance.id,
+            'name': 'Export Cat',
+            'slug': 'export-cat',
+        })
+        tag = self.env['kits.woo.tag'].create({
+            'instance_id': self.instance.id,
+            'name': 'Export Tag',
+            'slug': 'export-tag',
+        })
         coupon = self.env['kits.woo.coupon'].create({
             'name': 'Export Coupon',
             'code': 'EXPC10',
@@ -595,15 +634,23 @@ class TestWooWizardAllOperations(WooConnectorCommon):
         api.create_coupon.return_value = {'id': 43, 'code': coupon.code}
         api.update_coupon.return_value = {'id': 43, 'code': coupon.code, 'amount': '12'}
         with self._patch_api(api):
+            api.get_tags.side_effect = None
+            api.get_tags.return_value = iter([])
             self.instance._woo_export_categories(job=self._job(
                 'woo_export_categories',
                 {'category_mode': 'export', 'category_ids': [category.id]},
             ))
+            category.invalidate_recordset()
+            category.write({'name': 'Export Cat Updated'})
             self.instance._woo_export_categories(job=self._job(
                 'woo_export_categories',
                 {'category_mode': 'update', 'category_ids': [category.id]},
             ))
-            unbound_cat = self.env['product.category'].create({'name': 'No Bind Cat'})
+            unbound_cat = self.env['kits.woo.category'].create({
+                'instance_id': self.instance.id,
+                'name': 'No Bind Cat',
+                'slug': 'no-bind-cat',
+            })
             create_cat_calls = api.create_category.call_count
             self.instance._woo_export_categories(job=self._job(
                 'woo_export_categories',
@@ -613,10 +660,16 @@ class TestWooWizardAllOperations(WooConnectorCommon):
             self.instance._woo_export_tags(job=self._job(
                 'woo_export_tags', {'tag_mode': 'export', 'tag_ids': [tag.id]},
             ))
+            tag.invalidate_recordset()
+            tag.write({'name': 'Export Tag Updated'})
             self.instance._woo_export_tags(job=self._job(
                 'woo_export_tags', {'tag_mode': 'update', 'tag_ids': [tag.id]},
             ))
-            unbound_tag = self.env['product.tag'].create({'name': 'No Bind Tag'})
+            unbound_tag = self.env['kits.woo.tag'].create({
+                'instance_id': self.instance.id,
+                'name': 'No Bind Tag',
+                'slug': 'no-bind-tag',
+            })
             create_tag_calls = api.create_tag.call_count
             self.instance._woo_export_tags(job=self._job(
                 'woo_export_tags', {'tag_mode': 'update', 'tag_ids': [unbound_tag.id]},
@@ -643,8 +696,8 @@ class TestWooWizardAllOperations(WooConnectorCommon):
                 {'coupon_mode': 'update', 'coupon_ids': [unbound_coupon.id]},
             ))
             self.assertEqual(api.create_coupon.call_count, create_coupon_calls)
-        self.assertTrue(self.instance._woo_find_odoo('product.category', 41))
-        self.assertTrue(self.instance._woo_find_odoo('product.tag', 42))
+        self.assertEqual(category.external_id, '41')
+        self.assertEqual(tag.external_id, '42')
         self.assertEqual(coupon.woo_external_id, '43')
         api.create_category.assert_called()
         api.update_category.assert_called()

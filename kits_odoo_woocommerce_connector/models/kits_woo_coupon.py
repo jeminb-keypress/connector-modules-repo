@@ -41,9 +41,18 @@ class KitsWooCoupon(models.Model):
     usage_limit = fields.Integer(string='Usage Limit (Total)')
     usage_limit_per_user = fields.Integer(string='Usage Limit Per User')
     individual_use = fields.Boolean(default=False)
+    exclude_sale_items = fields.Boolean(
+        string='Exclude Sale Items',
+        default=False,
+    )
     free_shipping = fields.Boolean(default=False)
     minimum_amount = fields.Float()
     maximum_amount = fields.Float()
+    usage_count = fields.Integer(
+        string='Usage Count',
+        readonly=True,
+        help='Usage count last imported from WooCommerce.',
+    )
     product_ids = fields.Many2many(
         'product.product',
         'kits_woo_coupon_product_rel',
@@ -174,8 +183,9 @@ class KitsWooCoupon(models.Model):
         res = super().write(vals)
         mapped = {
             'name', 'code', 'discount_type', 'amount', 'date_expires', 'usage_limit',
-            'usage_limit_per_user', 'individual_use', 'free_shipping', 'minimum_amount',
-            'maximum_amount', 'product_ids_text', 'excluded_product_ids_text',
+            'usage_limit_per_user', 'individual_use', 'exclude_sale_items',
+            'free_shipping', 'minimum_amount', 'maximum_amount', 'usage_count',
+            'product_ids_text', 'excluded_product_ids_text',
             'product_categories_text', 'excluded_product_categories_text',
             'product_ids', 'excluded_product_ids',
             'product_category_ids', 'excluded_product_category_ids',

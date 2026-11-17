@@ -206,3 +206,18 @@ class TestWooProductSync(WooConnectorCommon):
             self.instance, odoo_record_id=template.id,
         )
         self.assertEqual(binding.external_id, '901')
+
+    def test_woo_store_field_visible_for_shared_products(self):
+        """Shared products (no company) must still list company stores in the M2M."""
+        template = self.env['product.template'].create({
+            'name': 'Shared Woo Select',
+            'type': 'consu',
+            'list_price': 1.0,
+            'company_id': False,
+        })
+        self.assertFalse(template.company_id)
+        # Previous check_company=True produced company_id=False and hid all stores.
+        selectable = template._woo_get_instances_for_company()
+        self.assertIn(self.instance, selectable)
+        template.woo_instance_ids = self.instance
+        self.assertIn(self.instance, template.woo_instance_ids)

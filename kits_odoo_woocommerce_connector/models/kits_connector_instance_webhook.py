@@ -890,6 +890,7 @@ class KitsConnectorInstanceWebhook(models.Model):
             'woo_webhook_coupon_enabled': False,
             'woo_auto_import_orders': False,
             'woo_auto_export_products': False,
+            'woo_auto_import_products': False,
             'woo_auto_export_stock': False,
         })
         self._kits_log_operation(
@@ -1164,24 +1165,44 @@ class KitsConnectorInstanceWebhook(models.Model):
             priority=5,
         )
 
+    def _woo_product_webhook_is_eligible(self, product, binding):
+        """Accept known products (incl. archived) or published non-variation products."""
+        self.ensure_one()
+        if binding:
+            return True
+        ptype = (product.get('type') or 'simple').lower()
+        if ptype == 'variation':
+            return False
+        status = (product.get('status') or '').lower()
+        return status == 'publish'
+
     def _woo_process_product_webhook(self, job=None):
-        """Apply product webhook. Never imports Woo stock quantities into Odoo."""
+        """Enqueue product webhook onto the product waiting list.
+
+        Never imports Woo stock quantities into Odoo. Process runs via the
+        waiting-list cron/job, or immediately when 50 draft rows accumulate.
+        """
         self.ensure_one()
         payload = (job.payload if job else None) or {}
         topic = payload.get('topic') or ''
         woo_id = payload.get('woo_id')
         product = dict(payload.get('product') or {})
         event = topic.split('.')[-1] if topic else ''
+        Waiting = self.env['kits.woo.product.waiting']
 
         if event == 'deleted':
             if not woo_id:
                 return self.env._('Skipped %(topic)s without id.', topic=topic)
-            self._woo_mark_product_deleted_remote(
-                woo_id,
-                message=self.env._(
-                    'Marked unavailable after WooCommerce %(topic)s webhook.',
-                    topic=topic,
-                ),
+            Waiting._enqueue(
+                self,
+                external_id=woo_id,
+                payload=product or {'id': int(woo_id) if str(woo_id).isdigit() else woo_id},
+                source='webhook',
+                event_type='delete',
+                delivery_id=payload.get('delivery_id') or False,
+                body_hash=payload.get('body_hash') or False,
+                process_delete_now=True,
+                trigger_batch=False,
             )
             self._kits_log_operation(
                 operation='woo_webhook_delete',
@@ -1204,9 +1225,17 @@ class KitsConnectorInstanceWebhook(models.Model):
         if not product.get('id'):
             return self.env._('Skipped product webhook without payload.')
 
-        binding = self._woo_record_binding(
-            'product.template', external_id=str(product.get('id')),
+        binding = self.env['kits.woo.product.binding'].with_context(active_test=False)._find(
+            self, external_id=str(product.get('id')),
         )
+        if not self._woo_product_webhook_is_eligible(product, binding):
+            return self.env._(
+                'Ignored product webhook %(topic)s for %(id)s '
+                '(unknown unpublished/draft or standalone variation).',
+                topic=topic,
+                id=product.get('id'),
+            )
+
         if self._woo_payload_is_stale(binding, product):
             return self.env._(
                 'Skipped stale product webhook %(topic)s for %(id)s.',
@@ -1220,13 +1249,38 @@ class KitsConnectorInstanceWebhook(models.Model):
         ):
             product.pop(key, None)
 
-        result = self._woo_import_one_product(product)
+        if binding and not binding.active:
+            binding.write({'active': True, 'exists_in_store': True})
+
+        try:
+            product = self._woo_prepare_product_payload_for_queue(product, self._woo_api())
+        except Exception as exc:  # noqa: BLE001
+            self._kits_log_operation(
+                operation='woo_webhook_product',
+                status='failure',
+                level='error',
+                message=str(exc),
+                details=f'woo_product_id={product.get("id")}',
+                job=job,
+            )
+            raise
+
+        row = Waiting._enqueue(
+            self,
+            external_id=product.get('id'),
+            payload=product,
+            source='webhook',
+            event_type='create' if event == 'created' else 'update',
+            delivery_id=payload.get('delivery_id') or False,
+            body_hash=payload.get('body_hash') or False,
+            trigger_batch=True,
+        )
         return self.env._(
-            'Webhook %(topic)s processed (%(result)s) for product %(pid)s '
-            '(stock fields ignored — Odoo remains inventory source of truth).',
+            'Webhook %(topic)s queued for product %(pid)s on waiting list '
+            '(row %(row)s, stock fields ignored — Odoo remains inventory source of truth).',
             topic=topic,
-            result=result,
             pid=product.get('id'),
+            row=row.id,
         )
 
     def _woo_process_order_webhook(self, job=None):
@@ -1263,8 +1317,28 @@ class KitsConnectorInstanceWebhook(models.Model):
         coupon = dict(payload.get('coupon') or {})
         event = topic.split('.')[-1] if topic else ''
 
+        Waiting = self.env['kits.woo.coupon.waiting']
         if event == 'deleted':
-            return self._woo_mark_webhook_deleted('kits.woo.coupon', woo_id, topic)
+            if not woo_id and coupon.get('id'):
+                woo_id = coupon.get('id')
+            if not woo_id:
+                return self.env._('Skipped %(topic)s without id.', topic=topic)
+            row = Waiting._enqueue(
+                self,
+                external_id=woo_id,
+                payload=coupon or {'id': woo_id},
+                source='webhook',
+                event_type='delete',
+                delivery_id=payload.get('delivery_id') or False,
+                body_hash=payload.get('body_hash') or False,
+            )
+            row.write({'state': 'processing'})
+            row._process_entries(job=job)
+            return self.env._(
+                'Webhook %(topic)s processed delete for coupon %(cid)s.',
+                topic=topic,
+                cid=woo_id,
+            )
 
         if event not in ('created', 'updated'):
             return self.env._('Ignored unsupported webhook topic %(topic)s.', topic=topic)
@@ -1273,12 +1347,35 @@ class KitsConnectorInstanceWebhook(models.Model):
         if not coupon.get('id'):
             return self.env._('Skipped coupon webhook without payload.')
 
-        result = self._woo_import_one_coupon(coupon)
+        binding = self._woo_binding()._kits_find_binding(
+            self, 'kits.woo.coupon', external_id=str(coupon.get('id')),
+        )
+        if self._woo_payload_is_stale(binding, coupon):
+            return self.env._(
+                'Skipped stale coupon webhook %(topic)s for %(id)s.',
+                topic=topic,
+                id=coupon.get('id'),
+            )
+
+        row = Waiting._enqueue(
+            self,
+            external_id=coupon.get('id'),
+            payload=coupon,
+            source='webhook',
+            event_type='create' if event == 'created' else 'update',
+            delivery_id=payload.get('delivery_id') or False,
+            body_hash=payload.get('body_hash') or False,
+            trigger_batch=True,
+        )
+        # Near-real-time: process this row in the same webhook job.
+        if row.state == 'pending':
+            row.write({'state': 'processing'})
+            row._process_entries(job=job)
         return self.env._(
-            'Webhook %(topic)s processed (%(result)s) for coupon %(cid)s.',
+            'Webhook %(topic)s queued/processed for coupon %(cid)s (waiting row %(row)s).',
             topic=topic,
-            result=result,
             cid=coupon.get('id'),
+            row=row.id,
         )
 
     def _woo_mark_webhook_deleted(self, odoo_model, woo_id, topic):

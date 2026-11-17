@@ -273,7 +273,10 @@ class KitsConnectorInstanceOrder(models.Model):
         discount_total = float(woo_order.get('discount_total') or 0.0)
         if discount_total > 0:
             line_commands.append(Command.create(
-                self._woo_prepare_discount_line_vals(discount_total)
+                self._woo_prepare_discount_line_vals(
+                    discount_total,
+                    coupon_lines=woo_order.get('coupon_lines') or [],
+                )
             ))
 
         # Fee lines (positive or negative)
@@ -508,6 +511,27 @@ class KitsConnectorInstanceOrder(models.Model):
 
     def _woo_match_order_product(self, item):
         self.ensure_one()
+        product = self._woo_match_order_product_existing(item)
+        if product:
+            return product
+        woo_product_id = item.get('product_id')
+        if not woo_product_id:
+            return self.env['product.product']
+        try:
+            self._woo_import_unknown_order_product(woo_product_id)
+        except Exception as exc:  # noqa: BLE001
+            raise UserError(self.env._(
+                'Could not import unknown WooCommerce product %(pid)s for order line '
+                '(sku=%(sku)s, variation_id=%(vid)s): %(error)s',
+                pid=woo_product_id,
+                sku=item.get('sku') or '',
+                vid=item.get('variation_id') or '',
+                error=exc,
+            )) from exc
+        return self._woo_match_order_product_existing(item)
+
+    def _woo_match_order_product_existing(self, item):
+        self.ensure_one()
         variation_id = item.get('variation_id')
         product_id = item.get('product_id')
         if variation_id:
@@ -518,18 +542,23 @@ class KitsConnectorInstanceOrder(models.Model):
             product = self._woo_find_odoo('product.product', product_id)
             if product:
                 return product
-            # Template binding for simple products
             template = self._woo_find_odoo('product.template', product_id)
             if template and template.product_variant_id:
                 return template.product_variant_id
         sku = (item.get('sku') or '').strip()
         if sku and self.woo_match_by_sku:
-            product = self.env['product.product'].search([
+            products = self.env['product.product'].search([
                 ('default_code', '=', sku),
                 ('company_id', 'in', [False, self.company_id.id]),
-            ], limit=1)
+            ])
+            if len(products) > 1:
+                raise UserError(self.env._(
+                    'SKU %(sku)s matches %(count)s Odoo variants while resolving an order line.',
+                    sku=sku,
+                    count=len(products),
+                ))
+            product = products[:1]
             if product:
-                # Prefer unbound or already bound to this store — avoid cross-store silent merge
                 binding = self._woo_record_binding(
                     'product.product', odoo_record_id=product.id,
                 )
@@ -538,6 +567,29 @@ class KitsConnectorInstanceOrder(models.Model):
                 }:
                     return product
         return self.env['product.product']
+
+    def _woo_import_unknown_order_product(self, woo_product_id):
+        """Fetch and import a missing product during order import (images immediate)."""
+        self.ensure_one()
+        api = self._woo_api()
+        try:
+            remote = api.get_product(woo_product_id)
+        except Exception as exc:  # noqa: BLE001
+            raise UserError(self.env._(
+                'Failed to fetch WooCommerce product %(id)s: %(error)s',
+                id=woo_product_id,
+                error=exc,
+            )) from exc
+        if not remote or not remote.get('id'):
+            raise UserError(self.env._(
+                'WooCommerce product %(id)s is missing or inaccessible.',
+                id=woo_product_id,
+            ))
+        # Refresh category/tag relationships used by product create.
+        self._woo_sync_catalog_prerequisites()
+        prepared = self._woo_prepare_product_payload_for_queue(remote, api)
+        with self.env.cr.savepoint():
+            self._woo_import_one_product(prepared, sync_images=True)
 
     def _woo_prepare_shipping_line_vals(self, shipping, total):
         self.ensure_one()
@@ -559,15 +611,27 @@ class KitsConnectorInstanceOrder(models.Model):
             'tax_ids': [Command.clear()],
         }
 
-    def _woo_prepare_discount_line_vals(self, discount_total):
+    def _woo_prepare_discount_line_vals(self, discount_total, coupon_lines=None):
         self.ensure_one()
         product = self.env.ref(
             'kits_odoo_woocommerce_connector.product_woo_discount',
             raise_if_not_found=False,
         ) or self._woo_get_or_create_discount_product()
+        codes = [
+            (line.get('code') or '').strip()
+            for line in (coupon_lines or [])
+            if (line.get('code') or '').strip()
+        ]
+        if codes:
+            name = self.env._(
+                'WooCommerce Discount (%(codes)s)',
+                codes=', '.join(codes),
+            )
+        else:
+            name = self.env._('WooCommerce Discount')
         return {
             'product_id': product.id,
-            'name': self.env._('WooCommerce Discount'),
+            'name': name,
             'product_uom_qty': 1.0,
             'product_uom_id': product.uom_id.id,
             'price_unit': -abs(discount_total),

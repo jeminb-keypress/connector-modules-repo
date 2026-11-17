@@ -47,9 +47,11 @@
                             <field name="usage_limit"/>
                             <field name="usage_limit_per_user"/>
                             <field name="individual_use"/>
+                            <field name="exclude_sale_items"/>
                             <field name="free_shipping"/>
                             <field name="minimum_amount"/>
                             <field name="maximum_amount"/>
+                            <field name="usage_count" readonly="1"/>
                             <field name="woo_external_id" readonly="1"/>
                             <field name="sync_state" readonly="1"/>
                         </group>
